@@ -15,16 +15,14 @@ import urllib.request
 # [1] 全局核心配置区
 # =====================================================================
 DEFAULT_SERVER_EXE = r"D:\Program files\Llama\llama-server.exe"
-# 【升级】默认路径更换为 9B 模型
 DEFAULT_MODEL_PATH = r"D:\Program files\Llama\Models\Qwen3.5-9B\Qwen3.5-9B-Q4_K_M.gguf"
-# 【升级】配套的 Tokenizer 路径一并修正为 9B 目录
 TOKENIZER_MODEL_ID = r"D:\Program files\Llama\Models\Tokenizer"  
 
 LOCAL_LLM_API_URL = "http://127.0.0.1:8080/v1/chat/completions"
 DEFAULT_REMOTE_URL = "https://api.deepseek.com/v1/chat/completions"
 DEFAULT_REMOTE_MODEL = "deepseek-chat"
 
-PURIFY_CHUNK_MAX_TOKENS = 6000                   
+PURIFY_CHUNK_MAX_TOKENS = 6000                    
 PURIFY_OVERLAP_TOKENS = 300                      
 
 LARGE_DOC_THRESHOLD_CHARS = 10000   
@@ -35,7 +33,6 @@ ACTIVE_LLM_URL, ACTIVE_LLM_MODEL, ACTIVE_LLM_KEY = "", "", ""
 server_process = None
 tokenizer = None  
 
-# 【优化】万能泛化提示词，通杀代码文档、体检报告、聊天记录
 SYSTEM_PROMPT = (
     "你是一个没有情感的客观事实与核心数据萃取引擎。\n"
     "你的任务是剥离外层冗余的格式（如 JSON 外壳）、无意义的社交废话（如寒暄、客套、语气词）和免责声明，将杂乱或碎片化的文本重组为高度凝练的核心要点。\n\n"
@@ -85,7 +82,7 @@ def start_local_server(cmd, expected_gguf_path):
     print("="*50 + "\n")
     
     try:
-        req = urllib.request.Request("http://127.0.0.1:8080/v1/models")
+        req = urllib.request.Request("[http://127.0.0.1:8080/v1/models](http://127.0.0.1:8080/v1/models)")
         with urllib.request.urlopen(req, timeout=2) as response:
             if response.status == 200:
                 print(f"✅ 探测到本地引擎已在运行，尝试无缝接入！\n")
@@ -101,7 +98,7 @@ def start_local_server(cmd, expected_gguf_path):
                 print(f"\n❌ 黑框闪退！(系统退出码: {server_process.returncode})")
                 return False
             try:
-                req = urllib.request.Request("http://127.0.0.1:8080/v1/models")
+                req = urllib.request.Request("[http://127.0.0.1:8080/v1/models](http://127.0.0.1:8080/v1/models)")
                 with urllib.request.urlopen(req, timeout=2) as response:
                     if response.status == 200:
                         print("\n✅ 本地 API 握手成功！异步流水线就绪。\n")
@@ -321,44 +318,41 @@ def advanced_preclean(text):
         print(f"    🧹 [深度除尘]: 清剿 {original_length - cl} 字符沉渣并智能还原 Unicode 格式！")
     return text.strip()
 
-def split_large_document(text, base_name):
+def split_large_document(text):
     if len(text) <= LARGE_DOC_THRESHOLD_CHARS: 
-        return [(base_name, text)]
+        return [text]
         
     print(f"    📏 检测到当前成型文本超过万字限制，触发物理切片算法 (平滑聚合)...")
     
-    def extract_sections(pattern, text_content, name_prefix):
+    def extract_contents(pattern, text_content):
         matches = list(re.finditer(pattern, text_content))
         if not matches: return []
-        parts = []
+        extracted = []
         first_start = matches[0].start()
         if first_start > 50:
             preamble = text_content[:first_start].strip()
-            if preamble: parts.append((f"{name_prefix}_前言", preamble))
+            if preamble: extracted.append(preamble)
         for i, match in enumerate(matches):
             start = match.start()
             end = matches[i+1].start() if i + 1 < len(matches) else len(text_content)
-            safe_title = re.sub(r'[\\/*?:"<>|\n\r]', '_', match.group(1).strip())[:40] 
             content = text_content[start:end].strip()
-            if len(content) > 10: parts.append((f"{name_prefix}_{safe_title}", content))
-        return parts
+            if len(content) > 10: extracted.append(content)
+        return extracted
 
     parts = []
     for pattern in [r'(?m)^#+\s+(.+)$', r'(?m)^(?:#*\s*)?(?:书名|书籍|Book|作者|Author)\s*[:：]\s*(.+)$']:
-        parts = extract_sections(pattern, text, base_name)
+        parts = extract_contents(pattern, text)
         if parts and len(parts) > 1: 
             break
 
     if not parts or len(parts) <= 1:
-        parts = [(base_name, text)]
+        parts = [text]
 
     merged_parts = []
-    current_name = None
     current_content = ""
 
-    for name, content in parts:
+    for content in parts:
         if not current_content:
-            current_name = name
             current_content = content
         else:
             if len(current_content) + len(content) + 2 <= LARGE_DOC_THRESHOLD_CHARS:
@@ -367,28 +361,22 @@ def split_large_document(text, base_name):
                 elif len(current_content) + len(content) + 2 <= 8000:
                     current_content += "\n\n" + content
                 else:
-                    merged_parts.append((current_name, current_content))
-                    current_name = name
+                    merged_parts.append(current_content)
                     current_content = content
             else:
-                merged_parts.append((current_name, current_content))
-                current_name = name
+                merged_parts.append(current_content)
                 current_content = content
 
     if current_content:
-        merged_parts.append((current_name, current_content))
+        merged_parts.append(current_content)
 
     final_parts = []
-    for name, content in merged_parts:
+    for content in merged_parts:
         if len(content) > LARGE_DOC_THRESHOLD_CHARS:
             sub_chunks = get_safe_chunks_fallback(content, LARGE_DOC_THRESHOLD_CHARS, 500)
-            if len(sub_chunks) == 1:
-                final_parts.append((name, sub_chunks[0]))
-            else:
-                for i, chunk in enumerate(sub_chunks, 1):
-                    final_parts.append((f"{name}_part{i}", chunk))
+            final_parts.extend(sub_chunks)
         else:
-            final_parts.append((name, content))
+            final_parts.append(content)
             
     return final_parts
 
@@ -428,45 +416,50 @@ async def execute_purify_mode_async(raw_content, base_name, output_dir, client_t
         
         # --- 阶段 2：宏观切片分卷 ---
         print(f"\n  [第二阶段: 宏观切片] 正在对提纯后的干净文本进行物理分卷拆分...")
-        sub_documents = split_large_document(purified_text, base_name)
+        sub_documents = split_large_document(purified_text)
         
         # --- 阶段 3：打标签并保存 ---
         print(f"\n  [第三阶段: 打标签并保存] 共拆分为 {len(sub_documents)} 个独立分卷...")
         
-        async def process_tag_and_save(sub_idx, sub_name, sub_content):
+        async def process_tag_and_save(sub_idx, sub_content):
             async with sem:
-                if len(sub_documents) > 1:
-                    print(f"    📄 正在处理分卷 [{sub_idx}/{len(sub_documents)}]: {sub_name}")
+                # 动态命名：如果有拆分就加数字，仅一份则保持原名或直接加 _1，此处统一处理为 原名_数字
+                file_name = f"{base_name}_{sub_idx}.md" if len(sub_documents) > 1 else f"{base_name}.md"
                 
-                print(f"    🏷️ 正在呼叫大模型为 [{sub_name}] 提取核心标签...")
+                if len(sub_documents) > 1:
+                    print(f"    📄 正在处理分卷 [{sub_idx}/{len(sub_documents)}]: {file_name}")
+                
+                print(f"    🏷️ 正在呼叫大模型为 [{file_name}] 提取核心标签...")
                 tags = await generate_document_tags_async(session, sub_content)
                 
                 final_text = sub_content
                 if tags:
                     final_text = f"> 🏷️ **核心标签**: {tags}\n\n---\n\n" + final_text
-                    print(f"      ✅ [{sub_name}] 标签注入成功: {tags}")
+                    print(f"      ✅ [{file_name}] 标签注入成功: {tags}")
                 else:
-                    print(f"      ⚠️ [{sub_name}] 标签提取失败")
+                    print(f"      ⚠️ [{file_name}] 标签提取失败")
                     
-                output_filepath = os.path.join(output_dir, f"Cleaned_{sub_name}.md")
+                output_filepath = os.path.join(output_dir, file_name)
                 with open(output_filepath, "w", encoding="utf-8") as f:
                     f.write(final_text)
                 print(f"    🚀 已保存最终提纯文件: {output_filepath}")
 
-        tag_tasks = [process_tag_and_save(i, name, content) for i, (name, content) in enumerate(sub_documents, 1)]
+        tag_tasks = [process_tag_and_save(i, content) for i, content in enumerate(sub_documents, 1)]
         await asyncio.gather(*tag_tasks)
         
         await asyncio.sleep(0.25)
 
-async def execute_split_only_mode_async(sub_documents, output_dir, client_threads):
+async def execute_split_only_mode_async(sub_documents, base_name, output_dir, client_threads):
     connector = aiohttp.TCPConnector(limit=client_threads)
     async with aiohttp.ClientSession(connector=connector) as session:
         sem = asyncio.Semaphore(client_threads)
         
-        async def process_split_and_tag(sub_idx, sub_name, sub_content):
+        async def process_split_and_tag(sub_idx, sub_content):
             async with sem:
+                file_name = f"{base_name}_{sub_idx}.md" if len(sub_documents) > 1 else f"{base_name}.md"
+                
                 if len(sub_documents) > 1:
-                    print(f"\n  📄 正在处理分卷 [{sub_idx}/{len(sub_documents)}]: {sub_name} (字数: {len(sub_content)})")
+                    print(f"\n  📄 正在处理分卷 [{sub_idx}/{len(sub_documents)}]: {file_name} (字数: {len(sub_content)})")
                 
                 print(f"    🏷️ 正在呼叫大模型为分卷提取核心标签...")
                 tags = await generate_document_tags_async(session, sub_content)
@@ -474,16 +467,16 @@ async def execute_split_only_mode_async(sub_documents, output_dir, client_thread
                 final_text = sub_content
                 if tags:
                     final_text = f"> 🏷️ **核心标签**: {tags}\n\n---\n\n" + final_text
-                    print(f"      ✅ [{sub_name}] 标签注入成功: {tags}")
+                    print(f"      ✅ [{file_name}] 标签注入成功: {tags}")
                 else:
-                    print(f"      ⚠️ [{sub_name}] 标签提取失败")
+                    print(f"      ⚠️ [{file_name}] 标签提取失败")
                     
-                output_filepath = os.path.join(output_dir, f"Sliced_{sub_name}.md")
+                output_filepath = os.path.join(output_dir, file_name)
                 with open(output_filepath, "w", encoding="utf-8") as f:
                     f.write(final_text)
                 print(f"    ✂️ 已保存带标签分卷: {output_filepath}")
 
-        tasks = [process_split_and_tag(i, name, content) for i, (name, content) in enumerate(sub_documents, 1)]
+        tasks = [process_split_and_tag(i, content) for i, content in enumerate(sub_documents, 1)]
         await asyncio.gather(*tasks)
         
         await asyncio.sleep(0.25)
@@ -497,7 +490,6 @@ class ConfigGUI:
         self.root = root
         self.root.title("LLM 智能文档纯化引擎 (支持自定义参数及 Prompt)")
         
-        # 【微调防丢失1】: 稍微增加初始窗口高度以适应各种缩放，设为 850
         window_width = 800
         window_height = 850  
         self.root.update_idletasks() 
@@ -505,7 +497,6 @@ class ConfigGUI:
         pos_y = (self.root.winfo_screenheight() // 2) - (window_height // 2)
         self.root.geometry(f"{window_width}x{window_height}+{pos_x}+{pos_y}")
         
-        # 【微调防丢失2】: 允许窗口被自由缩放和拉升，防止极端分辨率下依然显示不全
         self.root.resizable(True, True)
         
         self.config_result = None
@@ -548,7 +539,7 @@ class ConfigGUI:
         self.startup_args_text = tk.Text(engine_frame, height=4, width=58, font=("Consolas", 9))
         self.startup_args_text.grid(row=2, column=1, sticky="w", padx=5, pady=5)
         
-        default_args = f'-m "{DEFAULT_MODEL_PATH}" -c 24576 -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -b 1024 -ub 512 -np 2 --no-mmap --host 127.0.0.1 --port 8080 --reasoning off'
+        default_args = f'-m "{DEFAULT_MODEL_PATH}" -c 24576 -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -b 1024 -ub 512 -np 1 --no-mmap --host 127.0.0.1 --port 8080 --reasoning off'
         self.startup_args_text.insert(tk.END, default_args)
         
         def browse_model_and_update():
@@ -579,25 +570,17 @@ class ConfigGUI:
         ttk.Entry(engine_frame, textvariable=self.remote_model_var, width=58).grid(row=7, column=1, sticky="w", padx=5)
         ttk.Label(engine_frame, text="API Key:").grid(row=8, column=0, sticky="e", pady=2)
         ttk.Entry(engine_frame, textvariable=self.remote_key_var, show="*", width=58).grid(row=8, column=1, sticky="w", padx=5)
-
-        # =================================================================
-        # 【核心修正区】：严格按照先后顺序占位，死死钉住底部按钮
-        # =================================================================
         
-        # 1. 优先将按钮框架渲染并【死死钉在底部 (side=tk.BOTTOM)】
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 5))
         ttk.Button(btn_frame, text="🚀 应用配置并开始处理", command=self.on_start, width=30).pack()
 
-        # 2. 最后渲染提示词框架，让其自适应占满中间【剩余的所有空间 (side=tk.TOP)】
         prompt_frame = ttk.LabelFrame(main_frame, text="📝 系统提示词 (System Prompt) - 支持动态修改", padding=10)
         prompt_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        # 顺便加个滚动条双保险
         scrollbar = ttk.Scrollbar(prompt_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # 高度设为偏保守的5（反正有expand=True它会自动扩满剩余区域），杜绝初始化时撑爆窗口
         self.prompt_text = tk.Text(prompt_frame, height=5, font=("Microsoft YaHei", 9), yscrollcommand=scrollbar.set)
         self.prompt_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.prompt_text.yview)
@@ -685,8 +668,8 @@ async def main_async():
             if cfg["mode"] == 'purify':
                 await execute_purify_mode_async(raw_content, base_name, cfg["out_dir"], cfg["client_threads"])
             else:
-                sub_documents = split_large_document(raw_content, base_name)
-                await execute_split_only_mode_async(sub_documents, cfg["out_dir"], cfg["client_threads"])
+                sub_documents = split_large_document(raw_content)
+                await execute_split_only_mode_async(sub_documents, base_name, cfg["out_dir"], cfg["client_threads"])
                 
     except KeyboardInterrupt:
         print("\n\n🛑 收到强制停止指令 (Ctrl+C)！正在清理...")
