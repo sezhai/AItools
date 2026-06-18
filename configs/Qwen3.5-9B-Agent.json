@@ -25,7 +25,7 @@
     "embedding": false,
     "reranking": false,
     "jinja": true,
-    "kwargs": "'{\\\"enable_thinking\\\":false}'",
+    "kwargs": "",
     "n_predict": "4096",
     "temp": "",
     "top_k": "",
