@@ -529,11 +529,8 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
         )
         
         if filepath:
-            # 核心修正 1：剔除模型相关路径，使得配置文件彻底成为“参数模板”
-            config_data = {
-                k: v.get() for k, v in self.vars.items() 
-                if k not in ["model", "mmproj"]
-            }
+            # 修正：获取所有输入的值，不再剔除模型相关路径
+            config_data = {k: v.get() for k, v in self.vars.items()}
             try:
                 with open(filepath, "w", encoding="utf-8") as f:
                     json.dump(config_data, f, indent=4)
@@ -542,7 +539,8 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
                 self.lbl_config.config(text=f"当前配置: {os.path.basename(filepath)}")
                 self._save_meta()
                 
-                messagebox.showinfo("成功", f"配置已成功保存至：\n{os.path.basename(filepath)}\n\n(注：为了方便切换不同配置，保存操作已自动忽略模型路径)")
+                # 修正：去除了原先 messagebox 里的冗余提示信息
+                messagebox.showinfo("成功", f"配置已成功保存至：\n{os.path.basename(filepath)}")
                 self.append_log(f"[系统] 已切换并保存配置: {os.path.basename(filepath)}\n")
             except Exception as e:
                 messagebox.showerror("保存失败", f"保存配置文件失败:\n{str(e)}")
