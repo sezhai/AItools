@@ -24,34 +24,12 @@ class LlamaLauncherApp:
         self.process = None
         self.vars = {} # 统一管理所有输入变量
         
-        # 记录系统元数据（用于记忆最后一次使用的配置）
-        self.meta_file = "launcher_meta.json"
+        # 默认配置文件名
         self.current_config_file = "llama_config.json"
-        self._load_meta() # 启动时先读取记忆
         
         self.setup_ui()
-        self.load_settings() # 随后加载记忆中的配置文件
-
-    def _load_meta(self):
-        """读取程序上次关闭前的记忆（最后使用的配置文件）"""
-        if os.path.exists(self.meta_file):
-            try:
-                with open(self.meta_file, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                    last_cfg = meta.get("last_config", "llama_config.json")
-                    # 确保最后使用的文件仍然存在
-                    if os.path.exists(last_cfg):
-                        self.current_config_file = last_cfg
-            except:
-                pass
-
-    def _save_meta(self):
-        """保存当前正在使用的配置文件路径到记忆中"""
-        try:
-            with open(self.meta_file, "w", encoding="utf-8") as f:
-                json.dump({"last_config": self.current_config_file}, f)
-        except:
-            pass
+        # 启动时仅尝试加载默认的 llama_config.json (如果存在的话)
+        self.load_settings()
 
     def setup_ui(self):
         # ====== 核心修复：禁用 Combobox 的默认滚轮事件，防止误触 ======
@@ -193,7 +171,7 @@ class LlamaLauncherApp:
         g_basic = ttk.LabelFrame(self.left_frame, text="基础设置 (必填)")
         g_basic.pack(fill=tk.X, padx=5, pady=5)
         
-        self.create_dir_row(g_basic, "llama.cpp 所在目录:", ".", "llama_dir")
+        self.create_dir_row(g_basic, "llama.cpp 所在目录:", "", "llama_dir")
         
         self.create_file_row(g_basic, "模型路径 (-m):", "", "model", 
                              filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
@@ -529,7 +507,7 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
         )
         
         if filepath:
-            # 修正：获取所有输入的值，不再剔除模型相关路径
+            # 获取所有输入的值
             config_data = {k: v.get() for k, v in self.vars.items()}
             try:
                 with open(filepath, "w", encoding="utf-8") as f:
@@ -537,9 +515,7 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
                 
                 self.current_config_file = filepath
                 self.lbl_config.config(text=f"当前配置: {os.path.basename(filepath)}")
-                self._save_meta()
                 
-                # 修正：去除了原先 messagebox 里的冗余提示信息
                 messagebox.showinfo("成功", f"配置已成功保存至：\n{os.path.basename(filepath)}")
                 self.append_log(f"[系统] 已切换并保存配置: {os.path.basename(filepath)}\n")
             except Exception as e:
@@ -564,7 +540,6 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
                 self.current_config_file = filepath
                 if hasattr(self, 'lbl_config'):
                     self.lbl_config.config(text=f"当前配置: {os.path.basename(filepath)}")
-                self._save_meta()
                 
                 if hasattr(self, 'append_log'):
                     self.append_log(f"[系统] 已加载配置: {os.path.basename(filepath)}\n")
