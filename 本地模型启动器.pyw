@@ -141,7 +141,19 @@ class LlamaLauncherApp:
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         
         def browse_file():
-            filepath = filedialog.askopenfilename(filetypes=filetypes)
+            current_path = var.get().strip()
+            kwargs = {"filetypes": filetypes}
+            
+            # 解析当前输入框中的路径并设为初始目录
+            if current_path:
+                if os.path.exists(current_path):
+                    kwargs["initialdir"] = os.path.dirname(current_path) if os.path.isfile(current_path) else current_path
+                else:
+                    parent_dir = os.path.dirname(current_path)
+                    if os.path.exists(parent_dir):
+                        kwargs["initialdir"] = parent_dir
+                        
+            filepath = filedialog.askopenfilename(**kwargs)
             if filepath:
                 var.set(filepath)
                 
@@ -158,7 +170,19 @@ class LlamaLauncherApp:
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         
         def browse_dir():
-            dirpath = filedialog.askdirectory()
+            current_path = var.get().strip()
+            kwargs = {}
+            
+            # 解析当前输入框中的路径并设为初始目录
+            if current_path:
+                if os.path.isdir(current_path):
+                    kwargs["initialdir"] = current_path
+                else:
+                    parent_dir = os.path.dirname(current_path)
+                    if os.path.exists(parent_dir):
+                        kwargs["initialdir"] = parent_dir
+                        
+            dirpath = filedialog.askdirectory(**kwargs)
             if dirpath:
                 var.set(dirpath)
                 
@@ -483,23 +507,33 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
             self.lbl_pid.config(text="PID: -")
 
     def load_config_dialog(self):
+        # 让弹窗定位于当前配置文件所在的目录
+        initial_dir = os.path.dirname(os.path.abspath(self.current_config_file)) if self.current_config_file else "."
         filepath = filedialog.askopenfilename(
             title="加载配置文件",
+            initialdir=initial_dir,
             filetypes=[("JSON 配置文件", "*.json"), ("所有文件", "*.*")]
         )
         if filepath:
             self.load_settings(filepath)
 
     def save_settings(self):
+        # 让弹窗定位于当前配置文件所在的目录
+        initial_dir = os.path.dirname(os.path.abspath(self.current_config_file)) if self.current_config_file else "."
         filepath = filedialog.asksaveasfilename(
             title="保存配置文件",
+            initialdir=initial_dir,
             defaultextension=".json",
-            initialfile=os.path.basename(self.current_config_file),
+            initialfile=os.path.basename(self.current_config_file) if self.current_config_file else "llama_config.json",
             filetypes=[("JSON 配置文件", "*.json"), ("所有文件", "*.*")]
         )
         
         if filepath:
-            config_data = {k: v.get() for k, v in self.vars.items()}
+            # 核心修正 1：剔除模型相关路径，使得配置文件彻底成为“参数模板”
+            config_data = {
+                k: v.get() for k, v in self.vars.items() 
+                if k not in ["model", "mmproj"]
+            }
             try:
                 with open(filepath, "w", encoding="utf-8") as f:
                     json.dump(config_data, f, indent=4)
@@ -508,7 +542,7 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
                 self.lbl_config.config(text=f"当前配置: {os.path.basename(filepath)}")
                 self._save_meta()
                 
-                messagebox.showinfo("成功", f"配置已成功保存至：\n{os.path.basename(filepath)}")
+                messagebox.showinfo("成功", f"配置已成功保存至：\n{os.path.basename(filepath)}\n\n(注：为了方便切换不同配置，保存操作已自动忽略模型路径)")
                 self.append_log(f"[系统] 已切换并保存配置: {os.path.basename(filepath)}\n")
             except Exception as e:
                 messagebox.showerror("保存失败", f"保存配置文件失败:\n{str(e)}")
