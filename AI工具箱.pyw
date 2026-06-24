@@ -26,26 +26,26 @@ class ToolboxLauncher:
             {
                 "name": "本地模型引擎",
                 "icon": "💻", 
-                "desc": "本地 AI 算力底座，支持多模型切换 (基础/视觉/Agent/知识库)",
+                "desc": "本地 AI 算力底座，支持多模型切换 (基础/视觉/Agent)",
                 "script": "本地模型启动器.pyw" 
             },
             {
                 "name": "文本处理工具",
                 "icon": "📝",
                 "desc": "支持长文本/JSON/代码去冗余、自动分卷、AI打标签",
-                "script": "文本处理工具.pyw"
+                "script": "文本处理工具.py"
             },
             {
                 "name": "文字提取工具",
                 "icon": "📷", 
                 "desc": "支持 PDF/图片 混合转录，高精度 OCR 引擎",
-                "script": "文字提取工具.pyw"
+                "script": "文字提取工具.py"
             },
             {
                 "name": "音频转文字工具",
                 "icon": "🎤",  # 修正了特殊 Emoji 导致的间距过大问题
                 "desc": "基于 Whisper 的离线语音识别，支持生成多格式字幕与纯文本",
-                "script": "音频转文字工具.pyw"
+                "script": "音频转文字工具.py"
             }
         ]
         # =====================================================================
@@ -123,14 +123,14 @@ class ToolboxLauncher:
             return
 
         try:
+            # 弹出子窗口
             if sys.platform.startswith("win"):
                 if script_name.lower().endswith(('.bat', '.cmd')):
                     # 批处理文件不得不使用控制台来执行
                     subprocess.Popen(['cmd.exe', '/c', script_path], creationflags=subprocess.CREATE_NEW_CONSOLE, cwd=self.base_dir)
                 elif script_name.lower().endswith('.pyw'):
-                    # 💡【核心修复】：调用 pythonw 解释器并附加 CREATE_NO_WINDOW 标志，完美实现隐形启动
-                    CREATE_NO_WINDOW = 0x08000000
-                    subprocess.Popen(['pythonw', script_path], creationflags=CREATE_NO_WINDOW, cwd=self.base_dir)
+                    # pythonw 本身不显示控制台窗口
+                    subprocess.Popen(['pythonw', script_path], cwd=self.base_dir)
                 else:
                     # 普通的 .py 文件依然维持原有的弹窗方式
                     subprocess.Popen(['python', script_path], creationflags=subprocess.CREATE_NEW_CONSOLE, cwd=self.base_dir)
@@ -143,6 +143,9 @@ class ToolboxLauncher:
                     
         except Exception as e:
             messagebox.showerror("启动异常", f"运行 {script_name} 时发生错误：\n{e}")
+
+        # 2 秒后自动关闭主窗口
+        self.root.after(2000, self.root.quit)
 
 if __name__ == "__main__":
     root = tk.Tk()
