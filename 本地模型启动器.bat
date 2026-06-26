@@ -34,7 +34,7 @@ set "MODEL_9B=D:\Program files\Llama\Models\Qwen3.5-9B\Qwen3.5-9B-Q4_K_M.gguf"
 set "MM_9B=D:\Program files\Llama\Models\Qwen3.5-9B\mmproj-BF16.gguf"
 
 set "CFG_9B_TEXT=-c 16384 -ngl 99 -ctk q8_0 -ctv q8_0 -b 1024 -ub 512 -np 1 --no-mmap"
-set "CFG_9B_AGENT=-c 65536 -ngl 99 -ctk q8_0 -ctv q8_0 -b 1024 -ub 512 -np 1 --no-mmap --cache-ram 1024 --ctx-checkpoints 16 --jinja -n 4096"
+set "CFG_9B_AGENT=-c 131072 -ngl 99 -ctk q8_0 -ctv q8_0 -b 1024 -ub 512 -np 1 --no-mmap --cache-ram 1024 --ctx-checkpoints 16 --jinja -n 4096"
 
 :: ==========================================
 :: 35B 模型
@@ -44,7 +44,7 @@ set "MODEL_35B=D:\Program files\Llama\Models\Qwen3.6-35B\Qwen3.6-35B-A3B-APEX-I-
 set "MM_35B=D:\Program files\Llama\Models\Qwen3.6-35B\mmproj.gguf"
 
 set "CFG_35B_TEXT=-c 16384 -ctk q8_0 -ctv q8_0 -b 1024 -ub 512 -np 1 --no-mmap --mlock"
-set "CFG_35B_AGENT=-c 32768 -ctk q8_0 -ctv q8_0 -b 768 -ub 512 -np 1 --no-mmap --mlock --cache-ram 1024 --ctx-checkpoints 16 --jinja -n 4096"
+set "CFG_35B_AGENT=-c 65536 -ctk q8_0 -ctv q8_0 -b 768 -ub 512 -np 1 --no-mmap --mlock --cache-ram 1024 --ctx-checkpoints 16 --jinja -n 4096"
 
 :: ==========================================
 :: 4B 模型
@@ -69,14 +69,14 @@ set "CFG_35B_UNC=-c 16384 -ctk q8_0 -ctv q8_0 -b 768 -ub 512 -np 1 --no-mmap --m
 :: Embedding 模型
 :: ==========================================
 
-set "MODEL_EMB=D:\Program files\Llama\Models\Qwen3-Embedding\Qwen3-Embedding-0.6B-f16.gguf"
+set "MODEL_EMB=D:\Program files\Llama\Models\bge-large-zh\bge-large-zh-v1.5-f32.gguf"
 set "CFG_EMB=--embedding -ngl 99 -c 8192 -b 2048 -ub 512 -np 2"
 
 :: ==========================================
 :: Reranker 模型
 :: ==========================================
 
-set "MODEL_RERANK=D:\Program files\Llama\Models\Qwen3-Reranker\qwen3-reranker-0.6b-q8_0.gguf"
+set "MODEL_RERANK=D:\Program files\Llama\Models\bge-reranker\bge-reranker-v2-m3-Q8_0.gguf"
 set "CFG_RERANK=--reranking -ngl 99 -c 8192 -b 512 -ub 512 -np 2"
 
 
@@ -150,7 +150,7 @@ goto main_menu
 :run_9b_agent
 cls
 echo 启动 Qwen3.5-9B [Agent模式]
-.\llama-server.exe -m "%MODEL_9B%" --mmproj "%MM_9B%" --image-min-tokens 1024 %CFG_9B_AGENT% %COMMON% --chat-template-kwargs "{\"enable_thinking\":false}"
+.\llama-server.exe -m "%MODEL_9B%" --mmproj "%MM_9B%" --image-min-tokens 1024 %CFG_9B_AGENT% %COMMON% --chat-template --reasoning off
 pause
 goto main_menu
 
@@ -200,14 +200,14 @@ goto main_menu
 :run_35b_agent
 cls
 echo 启动 Qwen3.6-35B [Agent基础模式]
-.\llama-server.exe -m "%MODEL_35B%" %CFG_35B_AGENT% %COMMON% --chat-template-kwargs "{\"enable_thinking\":false}"
+.\llama-server.exe -m "%MODEL_35B%" %CFG_35B_AGENT% %COMMON% --chat-template --reasoning off
 pause
 goto main_menu
 
 :run_35b_agent_vision
 cls
 echo 启动 Qwen3.6-35B [Agent视觉模式]
-.\llama-server.exe -m "%MODEL_35B%" --mmproj "%MM_35B%" --image-min-tokens 1024 %CFG_35B_AGENT% %COMMON% --chat-template-kwargs "{\"enable_thinking\":false}"
+.\llama-server.exe -m "%MODEL_35B%" --mmproj "%MM_35B%" --image-min-tokens 1024 %CFG_35B_AGENT% %COMMON% --chat-template --reasoning off
 pause
 goto main_menu
 
@@ -246,7 +246,7 @@ goto main_menu
 :run_4b_agent
 cls
 echo 启动 Qwen3.5-4B [Agent模式]
-.\llama-server.exe -m "%MODEL_4B%" --mmproj "%MM_4B%" --image-min-tokens 1024 %CFG_4B_AGENT% %COMMON% --chat-template-kwargs "{\"enable_thinking\":false}"
+.\llama-server.exe -m "%MODEL_4B%" --mmproj "%MM_4B%" --image-min-tokens 1024 %CFG_4B_AGENT% %COMMON% --chat --reasoning off
 pause
 goto main_menu
 
