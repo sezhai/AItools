@@ -157,8 +157,16 @@ async def extract_text_from_image_async(session, base64_image, config: AppConfig
         ],
         "temperature": 0.0,
         "top_p": 0.1,
-        "max_tokens": 2048
+        "max_tokens": 2048,
+        
+        # 👇 核心改动：强制关闭大模型思考过程的参数 👇
+        "reasoning_format": "auto",
+        "reasoning_control": True,
+        "chat_template_kwargs": {
+            "enable_thinking": False
+        }
     }
+    
     for attempt in range(retries):
         try:
             async with session.post(config.active_url, json=payload, headers=headers, timeout=300) as response:
