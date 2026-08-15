@@ -3,9 +3,9 @@ from tkinter import ttk, messagebox, filedialog
 import subprocess
 import threading
 import os
-import sys
 import json
 import webbrowser
+import socket
 
 class LlamaLauncherApp:
     def __init__(self, root):
@@ -21,7 +21,9 @@ class LlamaLauncherApp:
         y = int((screen_height - window_height) / 2)
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
-        self.process = None
+        self._running = False
+        self._current_proc = None
+        self._external_running = False
         self.vars = {} # 统一管理所有输入变量
         
         # 默认配置文件名
@@ -30,6 +32,8 @@ class LlamaLauncherApp:
         self.setup_ui()
         # 启动时仅尝试加载默认的 llama_config.json (如果存在的话)
         self.load_settings()
+        # 启动时探测端口上是否已有服务器在运行
+        self.check_existing_server()
 
     def setup_ui(self):
         # ====== 核心修复：禁用 Combobox 的默认滚轮事件，防止误触 ======
@@ -194,10 +198,11 @@ class LlamaLauncherApp:
         # --- 3. 推理/思考模式 ---
         g_reason = ttk.LabelFrame(self.left_frame, text="推理/思考模式")
         g_reason.pack(fill=tk.X, padx=5, pady=5)
-        self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["", "on", "off"], "off", "reasoning")
+        self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["", "on", "off", "auto"], "auto", "reasoning")
         self.create_input_row(g_reason, "思考预算 (--reasoning-budget):", "", "reasoning_budget")
-        self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["", "none", "deepseek", "deepseek-legacy"], "", "reasoning_format")
+        self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["", "auto", "none", "deepseek", "deepseek-legacy"], "", "reasoning_format")
         self.create_input_row(g_reason, "思考预算耗尽消息:", "", "reasoning_exhausted")
+        self.create_check_row(g_reason, "保留思考内容 (--reasoning-preserve)", False, "reasoning_preserve")
 
         # --- 4. 性能与内存 ---
         g_perf = ttk.LabelFrame(self.left_frame, text="性能与内存")
@@ -207,8 +212,7 @@ class LlamaLauncherApp:
         self.create_combo_row(g_perf, "Flash Attention (-fa):", ["", "on", "off"], "on", "fa")
         self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["", "q8_0", "f16", "q4_0", "q4_1"], "q8_0", "ctk")
         self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["", "q8_0", "f16", "q4_0", "q4_1"], "f16", "ctv")
-        self.create_check_row(g_perf, "禁用 mmap (--no-mmap)", False, "no_mmap")
-        self.create_check_row(g_perf, "锁定内存 (--mlock)", False, "mlock")
+        self.create_combo_row(g_perf, "加载模式 (--load-mode):", ["", "none", "mmap", "mlock", "mmap+mlock", "dio"], "mmap", "load_mode")
         self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "1024", "cache_ram")
         self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "16", "ctx_checkpoints")
 
@@ -366,7 +370,7 @@ GPU 加速层数 (-ngl)
 
 推理模式 (--reasoning)
 说明： 是否激活大模型的深度思考（Reasoning）链。
-建议： 运行传统模型（如 Llama-3、Qwen-2.5）选择 off 或留空；运行推理模型（如 DeepSeek-R1）时选择 on。
+建议： 运行传统模型（如 Llama-3、Qwen-2.5）选择 off 或留空；运行推理模型（如 DeepSeek-R1）时选择 on。选择 auto 时由模型模板自动检测是否启用思考。
 
 思考预算 (--reasoning-budget)
 说明： 限制模型在回答前，最多可以生成多少个“思考 Token”。
@@ -375,6 +379,14 @@ GPU 加速层数 (-ngl)
 思考格式 (--reasoning-format)
 说明： 思考文本输出的封装格式。
 建议： 针对 DeepSeek 模型，选择 deepseek 能够让前端网页完美识别并折叠 <think> 标签。
+
+思考预算耗尽消息 (--reasoning-budget-message)
+说明： 当思考预算耗尽时，注入到思考结束标签之前返回的提示消息文本。
+建议： 留空表示不注入任何消息；如对接的前端需要识别思考中断，可在此自定义固定提示语。
+
+思考保留量 (--reasoning-preserve)
+说明： 勾选后保留推理模型的思考（Reasoning）内容。
+建议： 勾选后，模型生成结束时的思考过程会保留在上下文中，方便后续对话引用；默认不勾选。
 
 4. 性能与内存
 用于极限压榨硬件性能，或在低配设备上通过降低精度挽救显存。
@@ -392,13 +404,14 @@ KV Cache 类型 K (-ctk) 与 类型 V (-ctv)
 建议： * 追求速度和省显存：推荐将 K 缓存设为 q8_0，V 缓存设为 f16（或者两者都设为 q4_0）。
 这能在损失极微小精度的情况下，释放出几个 GB 的宝贵显存。
 
-禁用 mmap (--no-mmap)
-说明： 勾选后将放弃内存映射，转而把整个模型强行一次性完整加载进内存/显存。
-建议： 机械硬盘用户或经常遇到运行中卡顿的用户建议勾选，这样虽然启动慢，但运行期间不会因为频繁读取硬盘而卡顿。
-
-锁定内存 (--mlock)
-说明： 强行将模型锁定在物理内存中，禁止操作系统将其交换到虚拟内存（硬盘垃圾文件）中。
-建议： 内存非常充沛的电脑可以勾选，防止模型因闲置而被系统“挂起”导致再次对话时极慢。
+加载模式 (--load-mode)
+说明： 模型文件的加载方式，决定模型权重如何从磁盘读入内存/显存。
+建议： * auto：自动根据设备能力选择最合适的加载方式（默认）。
+none：不采用任何特殊加载方式。
+mmap：内存映射方式，按需懒加载，启动快、省内存。
+mlock：加载时将模型锁定在物理内存中，禁止交换到虚拟内存。
+mmap+mlock：内存映射同时锁定内存，兼顾懒加载与防止被系统“挂起”。
+dio：直接 I/O 方式，一次性将整个模型完整读入，启动慢但运行期间不会因频繁读取硬盘而卡顿，机械硬盘用户建议选择。
 
 缓存 RAM 限制 与 上下文检查点
 说明： 进阶的内存控制单元，主要用于在超长上下文处理时，限制缓存占用的内存上限。
@@ -531,11 +544,18 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
                     config_data = json.load(f)
                 for k, v in config_data.items():
                     if k in self.vars:
-                        if k == "reasoning" and v == "":
-                            v = "off"
-                        if k == "reasoning_format" and v not in ["", "none", "deepseek", "deepseek-legacy"]:
-                            v = ""
-                        self.vars[k].set(v)
+                        var = self.vars[k]
+                        if isinstance(var, tk.BooleanVar):
+                            if isinstance(v, bool):
+                                var.set(v)
+                            else:
+                                var.set(str(v).strip().lower() in ("1", "true", "yes", "on"))
+                        else:
+                            if k == "reasoning" and v == "":
+                                v = "off"
+                            if k == "reasoning_format" and v not in ["", "none", "deepseek", "deepseek-legacy"]:
+                                v = ""
+                            var.set(v)
                 
                 self.current_config_file = filepath
                 if hasattr(self, 'lbl_config'):
@@ -596,13 +616,14 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
             ("keep", "--keep", False),
             ("embedding", "--embedding", True),
             ("reranking", "--reranking", True),
-            ("no_mmap", "--no-mmap", True),
-            ("mlock", "--mlock", True),
+            ("load_mode", "--load-mode", False),
             ("cache_ram", "--cache-ram", False),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
             ("reasoning", "--reasoning", False),
             ("reasoning_budget", "--reasoning-budget", False),
             ("reasoning_format", "--reasoning-format", False),
+            ("reasoning_preserve", "--reasoning-preserve", True),
+            ("reasoning_exhausted", "--reasoning-budget-message", False),
             ("jinja", "--jinja", True),
             ("n_predict", "-n", False),
             ("temp", "--temp", False),
@@ -634,11 +655,10 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
         
         safe_cmd = []
         for item in cmd_list:
+            item = item.replace("%", "%%")
             if " " in item or "{" in item:
-                if "{" in item:
-                    safe_cmd.append(f"'{item}'") 
-                else:
-                    safe_cmd.append(f'"{item}"')
+                escaped = item.replace('"', '\\"')
+                safe_cmd.append(f'"{escaped}"')
             else:
                 safe_cmd.append(item)
 
@@ -655,9 +675,74 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
         except Exception as e:
             messagebox.showerror("失败", f"生成脚本失败:\n{str(e)}")
 
+    def _current_host_port(self):
+        host = self.vars.get("host").get().strip() or "127.0.0.1"
+        port = self.vars.get("port").get().strip() or "8080"
+        if host == "0.0.0.0":
+            host = "127.0.0.1"
+        return host, port
+
+    def detect_server(self):
+        host, port = self._current_host_port()
+        try:
+            with socket.create_connection((host, int(port)), timeout=1.0):
+                return True
+        except (OSError, ValueError):
+            return False
+
+    def check_existing_server(self):
+        host, port = self._current_host_port()
+        if self.detect_server():
+            self._external_running = True
+            self.lbl_status.config(text=f"检测到服务器已在运行 ({host}:{port})", fg="orange")
+            self.start_btn.config(text="⏹ 停止服务器")
+            self.append_log(f"[系统] 检测到 {host}:{port} 已有服务器在运行。\n")
+
+    def _find_pid_on_port(self, host, port):
+        if os.name != 'nt':
+            return None
+        try:
+            out = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            ).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[0] == "TCP" and parts[1].endswith(f":{port}") and parts[3] == "LISTENING":
+                    return int(parts[4])
+        except Exception:
+            pass
+        return None
+
+    def stop_external_server(self):
+        host, port = self._current_host_port()
+        pid = self._find_pid_on_port(host, port)
+        if pid:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    capture_output=True, text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                )
+                self.append_log(f"[系统] 已终止外部服务器进程 (PID {pid})。\n")
+            except Exception as e:
+                self.append_log(f"[错误] 无法终止外部服务器: {str(e)}\n")
+        else:
+            self.append_log("[系统] 未能定位到监听该端口的进程，请手动关闭。\n")
+        self._external_running = False
+        self.lbl_status.config(text="未运行", fg="red")
+        self.start_btn.config(text="▶ 启动服务器")
+        self.update_process_info(False)
+
     def toggle_server(self):
-        if self.process and self.process.poll() is None:
-            self.process.terminate()
+        if self._external_running:
+            self.stop_external_server()
+            return
+        if self._running:
+            if self._current_proc and self._current_proc.poll() is None:
+                self._current_proc.terminate()
+            self._running = False
             self.append_log("\n[系统] 正在终止服务器进程...")
             self.start_btn.config(text="▶ 启动服务器")
             self.lbl_status.config(text="未运行", fg="red")
@@ -674,12 +759,14 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
 
         self.start_btn.config(text="⏹ 停止服务器")
         self.lbl_status.config(text="运行中", fg="green")
+        self._running = True
         
         threading.Thread(target=self.run_process, args=(cmd,), daemon=True).start()
 
     def run_process(self, cmd):
+        proc = None
         try:
-            self.process = subprocess.Popen(
+            proc = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.PIPE, 
                 stderr=subprocess.STDOUT,
@@ -690,13 +777,16 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             )
             
-            self.root.after(0, self.update_process_info, True, self.process.pid)
+            self._current_proc = proc
+            self.root.after(0, self.update_process_info, True, proc.pid)
 
-            for line in self.process.stdout:
+            for line in proc.stdout:
                 self.root.after(0, self.append_log, line)
 
-            self.process.wait()
-            self.root.after(0, self.server_stopped)
+            proc.wait()
+            if self._current_proc is proc:
+                self._current_proc = None
+                self.root.after(0, self.server_stopped)
 
         except FileNotFoundError:
             self.root.after(0, self.append_log, "\n[错误] 在指定的目录下找不到执行程序 (llama.exe 或 llama-server.exe)！\n请确保 llama.cpp 目录选择正确。\n")
@@ -706,6 +796,7 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
             self.root.after(0, self.server_stopped)
 
     def server_stopped(self):
+        self._running = False
         self.start_btn.config(text="▶ 启动服务器")
         self.lbl_status.config(text="未运行", fg="red")
         self.update_process_info(False)
