@@ -58,9 +58,9 @@ class LlamaLauncherApp:
         self.canvas = tk.Canvas(self.left_frame_container, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(self.left_frame_container, orient="vertical", command=self.canvas.yview)
         
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-        self.canvas.bind_all("<Button-4>", self._on_mousewheel)
-        self.canvas.bind_all("<Button-5>", self._on_mousewheel)
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind("<Button-4>", self._on_mousewheel)
+        self.canvas.bind("<Button-5>", self._on_mousewheel)
 
         self.left_frame = ttk.Frame(self.canvas)
         self.left_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
@@ -189,18 +189,19 @@ class LlamaLauncherApp:
         # --- 2. 模型参数 ---
         g_model = ttk.LabelFrame(self.left_frame, text="模型参数")
         g_model.pack(fill=tk.X, padx=5, pady=5)
-        self.create_input_row(g_model, "上下文长度 (-c, --ctx-size):", "32768", "ctx")
+        self.create_input_row(g_model, "上下文长度 (-c, --ctx-size):", "0", "ctx")
         self.create_input_row(g_model, "图像最小Tokens (--image-min-tokens):", "", "image_min_tokens")
         self.create_input_row(g_model, "GPU加速层数 (-ngl):", "", "ngl")
-        self.create_input_row(g_model, "批处理大小 (-b):", "768", "b")
+        self.create_input_row(g_model, "批处理大小 (-b):", "2048", "b")
         self.create_input_row(g_model, "物理批处理大小 (-ub):", "512", "ub")
 
         # --- 3. 推理/思考模式 ---
         g_reason = ttk.LabelFrame(self.left_frame, text="推理/思考模式")
         g_reason.pack(fill=tk.X, padx=5, pady=5)
         self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["", "on", "off", "auto"], "auto", "reasoning")
-        self.create_input_row(g_reason, "思考预算 (--reasoning-budget):", "", "reasoning_budget")
-        self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["", "auto", "none", "deepseek", "deepseek-legacy"], "", "reasoning_format")
+        self.create_combo_row(g_reason, "思考力度 (--reasoning-effort):", ["", "default", "minimal", "low", "medium", "high", "xhigh", "max"], "default", "reasoning_effort")
+        self.create_input_row(g_reason, "思考预算 (--reasoning-budget):", "-1", "reasoning_budget")
+        self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["", "auto", "none", "deepseek", "deepseek-legacy"], "auto", "reasoning_format")
         self.create_input_row(g_reason, "思考预算耗尽消息:", "", "reasoning_exhausted")
         self.create_check_row(g_reason, "保留思考内容 (--reasoning-preserve)", False, "reasoning_preserve")
 
@@ -209,39 +210,48 @@ class LlamaLauncherApp:
         g_perf.pack(fill=tk.X, padx=5, pady=5)
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
-        self.create_combo_row(g_perf, "Flash Attention (-fa):", ["", "on", "off"], "on", "fa")
-        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["", "q8_0", "f16", "q4_0", "q4_1"], "q8_0", "ctk")
+        self.create_combo_row(g_perf, "Flash Attention (-fa):", ["", "on", "off", "auto"], "auto", "fa")
+        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["", "q8_0", "f16", "q4_0", "q4_1"], "f16", "ctk")
         self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["", "q8_0", "f16", "q4_0", "q4_1"], "f16", "ctv")
-        self.create_combo_row(g_perf, "加载模式 (--load-mode):", ["", "none", "mmap", "mlock", "mmap+mlock", "dio"], "mmap", "load_mode")
-        self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "1024", "cache_ram")
-        self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "16", "ctx_checkpoints")
+        self.create_combo_row(g_perf, "加载模式 (--load-mode):", ["", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio"], "auto", "load_mode")
+        self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "8192", "cache_ram")
+        self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "32", "ctx_checkpoints")
 
         # --- 5. 请求控制与模板 ---
         g_req = ttk.LabelFrame(self.left_frame, text="请求控制与模板")
         g_req.pack(fill=tk.X, padx=5, pady=5)
-        self.create_input_row(g_req, "并发槽位数 (-np, --n-parallel):", "1", "np")
-        self.create_input_row(g_req, "保留初始Tokens (--keep):", "-1", "keep")
+        self.create_input_row(g_req, "并发槽位数 (-np, --parallel):", "1", "np")
+        self.create_input_row(g_req, "保留初始Tokens (--keep):", "0", "keep")
         self.create_check_row(g_req, "启用向量嵌入 (--embedding)", False, "embedding")
         self.create_check_row(g_req, "启用重排序 (--reranking)", False, "reranking")
         self.create_check_row(g_req, "使用 Jinja 模板 (--jinja)", True, "jinja")
         self.create_input_row(g_req, "对话模板 (--chat-template-kwargs):", "", "kwargs")
 
+        # --- 5b. 投机解码 ---
+        g_spec = ttk.LabelFrame(self.left_frame, text="投机解码")
+        g_spec.pack(fill=tk.X, padx=5, pady=5)
+        self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "none", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache"], "", "spec_type")
+        self.create_file_row(g_spec, "草稿模型路径 (--model-draft):", "", "draft_model",
+                             filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
+        self.create_input_row(g_spec, "草稿最大Tokens (--draft-max):", "", "draft_max")
+        self.create_input_row(g_spec, "草稿最小Tokens (--draft-min):", "", "draft_min")
+
         # --- 6. 采样设置 ---
         g_sample = ttk.LabelFrame(self.left_frame, text="采样设置")
         g_sample.pack(fill=tk.X, padx=5, pady=5)
-        self.create_input_row(g_sample, "最大生成数 (-n, --n-predict):", "4096", "n_predict")
-        self.create_input_row(g_sample, "温度 (--temp):", "", "temp")
-        self.create_input_row(g_sample, "Top-K采样 (--top-k):", "", "top_k")
-        self.create_input_row(g_sample, "Top-P采样 (--top-p):", "", "top_p")
-        self.create_input_row(g_sample, "最小概率 (--min-p):", "", "min_p")
-        self.create_input_row(g_sample, "存在惩罚 (--presence-penalty):", "", "presence_penalty")
+        self.create_input_row(g_sample, "最大生成数 (-n, --n-predict):", "-1", "n_predict")
+        self.create_input_row(g_sample, "温度 (--temp):", "0.80", "temp")
+        self.create_input_row(g_sample, "Top-K采样 (--top-k):", "40", "top_k")
+        self.create_input_row(g_sample, "Top-P采样 (--top-p):", "0.95", "top_p")
+        self.create_input_row(g_sample, "最小概率 (--min-p):", "0.05", "min_p")
+        self.create_input_row(g_sample, "存在惩罚 (--presence-penalty):", "0.00", "presence_penalty")
 
         # --- 7. 高级采样 ---
         g_adv = ttk.LabelFrame(self.left_frame, text="高级采样")
         g_adv.pack(fill=tk.X, padx=5, pady=5)
-        self.create_input_row(g_adv, "重复惩罚 (--repeat-penalty):", "", "repeat_penalty")
-        self.create_input_row(g_adv, "重复惩罚范围 (--repeat-last-n):", "", "repeat_last_n")
-        self.create_input_row(g_adv, "随机种子 (-s, --seed):", "", "seed")
+        self.create_input_row(g_adv, "重复惩罚 (--repeat-penalty):", "1.00", "repeat_penalty")
+        self.create_input_row(g_adv, "重复惩罚范围 (--repeat-last-n):", "64", "repeat_last_n")
+        self.create_input_row(g_adv, "随机种子 (-s, --seed):", "-1", "seed")
 
     def build_right_panel(self):
         # ====== 顶部控制与配置栏 (单行平铺) ======
@@ -283,9 +293,17 @@ class LlamaLauncherApp:
 
         # ====== 日志输出区 ======
         ttk.Label(self.right_frame, text="日志输出").pack(anchor=tk.W, padx=5, pady=(5, 0))
-        
-        self.log_text = tk.Text(self.right_frame, bg="black", fg="white", font=("Consolas", 10), width=1)
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        log_frame = ttk.Frame(self.right_frame)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.log_text = tk.Text(log_frame, bg="black", fg="white", font=("Consolas", 10), width=1)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.config(yscrollcommand=log_scrollbar.set)
+        self.log_text.bind("<MouseWheel>", lambda e: self.log_text.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        self.log_text.bind("<Button-4>", lambda e: self.log_text.yview_scroll(-1, "units"))
+        self.log_text.bind("<Button-5>", lambda e: self.log_text.yview_scroll(1, "units"))
 
         bottom_frame = ttk.Frame(self.right_frame)
         bottom_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -347,7 +365,7 @@ llama.cpp 所在目录
 
 上下文长度 (-c, --ctx-size)
 说明： 模型能记住的上下文总长度（包含“你的问题”+“模型的回答”的总 Token 数）。
-建议： 默认 32768。如果显存不足导致报错，可以适当调小（如 8192 或 4096）。
+建议： 默认 0（使用模型训练时的上下文长度）。如需更长上下文可手动填大，如 32768；显存不足报错时则调小（如 8192 或 4096）。
 
 图像最小 Token 数 (--image-min-tokens)
 说明： 多模态视觉模型专属参数。限制在图像编码、分块处理时生成的最小 Token 数量。
@@ -355,11 +373,11 @@ llama.cpp 所在目录
 
 GPU 加速层数 (-ngl)
 说明： 卸载到显卡（GPU）中计算的模型层数。
-建议： 最核心的加速参数。如果你的显存足够大，建议直接填入 99（代表将所有层全塞入显存），此时速度最快。如果显卡爆显存，再逐步调小该数值。
+建议： 默认留空 = auto（llama.cpp 自动分配）。显存足够大时建议直接填入 99（所有层全塞入显存），此时速度最快；显卡爆显存再逐步调小。
 
 批处理大小 (-b)
 说明： 逻辑批处理大小，用于控制提示词（Prompt）吞吐。
-建议： 默认 768 或 2048。数值越大，处理长文本提示词的速度越快，但会占用更多显存。
+建议： 默认 2048。数值越大，处理长文本提示词的速度越快，但会占用更多显存。
 
 物理批处理大小 (-ub)
 说明： 实际交付给硬件的物理批处理大小。
@@ -372,13 +390,17 @@ GPU 加速层数 (-ngl)
 说明： 是否激活大模型的深度思考（Reasoning）链。
 建议： 运行传统模型（如 Llama-3、Qwen-2.5）选择 off 或留空；运行推理模型（如 DeepSeek-R1）时选择 on。选择 auto 时由模型模板自动检测是否启用思考。
 
+思考力度 (--reasoning-effort)
+说明： 通过 reasoning_effort 传给聊天模板的思考强度级别。
+建议： 可选 default / minimal / low / medium / high / xhigh / max。默认 default（保持模板默认）。仅对支持该能力的模型模板生效。
+
 思考预算 (--reasoning-budget)
 说明： 限制模型在回答前，最多可以生成多少个“思考 Token”。
-建议： 留空表示不限制，由模型自行决定何时思考结束。
+建议： 默认 -1（官方默认，不限制），由模型自行决定何时思考结束。
 
 思考格式 (--reasoning-format)
 说明： 思考文本输出的封装格式。
-建议： 针对 DeepSeek 模型，选择 deepseek 能够让前端网页完美识别并折叠 <think> 标签。
+建议： 默认 auto。针对 DeepSeek 模型，选择 deepseek 能够让前端网页完美识别并折叠 <think> 标签。
 
 思考预算耗尽消息 (--reasoning-budget-message)
 说明： 当思考预算耗尽时，注入到思考结束标签之前返回的提示消息文本。
@@ -393,15 +415,15 @@ GPU 加速层数 (-ngl)
 
 CPU线程数 (-t) 与 批处理线程数 (-tb)
 说明：分配给模型运算的物理 CPU 核心数量（前者用于文本生成，后者用于批量处理提示词分析）。
-建议：默认设置为 6 左右效果较佳。推荐将其设置为你的电脑 CPU “物理核心数”。不建议超过物理核心数，否则可能会因为线程抢占反而导致生成变慢。
+建议：默认留空 = 自动（llama.cpp 按你的 CPU 核心数自动设置）。想手动控制时，推荐设置为电脑 CPU “物理核心数”，不建议超过物理核心数，否则可能因线程抢占反而变慢。
 
 Flash Attention (-fa)
 说明： 闪烁注意力机制。一种极其高效的算法优化。
-建议： 强烈建议选择 on。它能在几乎不损失精度的前提下，大幅降低长文本下的显存占用，并提升生成速度。
+建议： 默认 auto，由程序自动判断是否启用，绝大多数情况都会开启。它能在几乎不损失精度的前提下，大幅降低长文本下的显存占用，并提升生成速度。
 
 KV Cache 类型 K (-ctk) 与 类型 V (-ctv)
 说明： 上下文缓存（Key / Value）的键值对量化数据类型。
-建议： * 追求速度和省显存：推荐将 K 缓存设为 q8_0，V 缓存设为 f16（或者两者都设为 q4_0）。
+建议： 默认 f16（官方默认）。显存紧张时可把 K 缓存设为 q8_0，V 缓存设为 f16（或两者都设 q4_0），
 这能在损失极微小精度的情况下，释放出几个 GB 的宝贵显存。
 
 加载模式 (--load-mode)
@@ -415,15 +437,16 @@ dio：直接 I/O 方式，一次性将整个模型完整读入，启动慢但运
 
 缓存 RAM 限制 与 上下文检查点
 说明： 进阶的内存控制单元，主要用于在超长上下文处理时，限制缓存占用的内存上限。
+建议： 缓存 RAM 默认 8192（MB），-1 = 不限制、0 = 禁用、其余正整数为 MiB 上限；上下文检查点默认 32。两者均为官方默认，一般无需修改。
 
 5. 请求控制与模板
-并发槽位数 (-np, --n-parallel)
+并发槽位数 (-np, --parallel)
 说明： 允许同时处理的并发请求（用户）数量。
 建议： 个人单机使用填写 1。如果是部署在服务器上供团队多人同时使用，可根据硬件能力调大（如 4 或 8）。
 
 保留初始 Tokens (--keep)
 说明： 当对话长度超过“上下文长度”导致模型必须遗忘旧内容时，此参数决定强制保留最初的多少个 Token。
-建议： 默认并强烈建议设为 -1。这代表永远保留并锁死“系统提示词（System Prompt）”，防止模型在长篇对话后突然忘记自己扮演的角色或核心规则。
+建议： 默认 0（官方默认）。想要锁死“系统提示词（System Prompt）”，防止模型在长篇对话后忘记角色或核心规则时，可设为 -1。
 
 启用向量嵌入 (--embedding)
 说明： 开启后，服务器将开放专门的 `/v1/embeddings` 端点，允许外部系统将文本转换为可检索的数学向量。
@@ -440,37 +463,58 @@ dio：直接 I/O 方式，一次性将整个模型完整读入，启动慢但运
 对话模板参数 (--chat-template-kwargs)
 说明： 传递给 Jinja 模板的自定义高级参数字符串（Json 格式）。通常留空。
 
+5b. 投机解码
+投机解码通过一个额外的草稿模型（或 n-gram 匹配）预测后续 token，再由主模型验证，可在不损失输出的前提下大幅提升生成速度。
+共分两类：
+* 草稿模型类：draft-simple / draft-mtp / draft-eagle3 / draft-dflash / draft-dspark —— 必须指定一个草稿模型或 MTP 头文件（见下方“草稿模型路径”）。
+* n-gram 类：ngram-simple / ngram-mod / ngram-cache —— 无需任何额外模型，利用主模型自身上下文做匹配，纯 CPU 也有效果。
+
+投机解码类型 (--spec-type)
+说明： 指定投机解码实现方式。可选 none / draft-simple / draft-mtp / draft-eagle3 / draft-dflash / draft-dspark / ngram-simple / ngram-mod / ngram-cache。
+建议： 没有额外草稿模型时，选 ngram-mod 直接生效，什么都不用填；有 MTP 头（如 Qwen3、Qwen3Coder 等自带 MTP 头的模型，需单独下载配套的 MTP 头 .gguf）时选 draft-mtp，并填写下面的草稿模型路径。留空表示关闭投机解码。
+
+草稿模型路径 (--model-draft)
+说明： 草稿模型类投机解码所需的草稿模型或 MTP 头文件（.gguf）。
+建议： 选择 draft-simple / draft-mtp / draft-eagle3 / draft-dflash / draft-dspark 时必填；选 ngram 系列时无需填写。若草稿 GGUF 自带元数据，留空时程序也可尝试自动推断类型。
+
+草稿最大/最小Tokens (--draft-max / --draft-min)
+说明： 单次投机解码草稿的 token 数量范围。
+建议： 一般保持默认；草稿越长收益越大但开销也越高。
+
 6. 采样设置
 这些参数决定了模型的“性格”——是严谨死板，还是天马行空。
 
 最大生成数 (-n, --n-predict)
 说明： 限制模型单次回答输出的最大 Token 数量。
-建议： 默认 4096。防止模型陷入死循环或者长篇大论停不下来。
+建议： 默认 -1（官方默认，不限制）。想防止模型长篇大论停不下来时，可手动设置如 4096。
 
 温度 (--temp)
 说明： 随机性（创造力）系数。
-建议： * 数值越低（如 0.1 - 0.3）：回答极度严谨、死板、适合写代码、做数学题。
+建议： 默认 0.80（官方默认）。
+* 数值越低（如 0.1 - 0.3）：回答极度严谨、死板、适合写代码、做数学题。
 数值越高（如 0.7 - 1.0）：回答富有创造力、词汇丰富，适合写小说、文案策划。
 
 Top-K采样 / Top-P采样 / 最小概率 (--min-p)
 说明： 用于筛选概率最高的一批词汇，剔除那些胡言乱语的低概率词。
-建议： 现代模型推荐重点微调 --min-p（如设定为 0.05），它比传统的 Top-P 过滤错词的效果要更优秀、更自然。
+建议： 官方默认 Top-K=40、Top-P=0.95、Min-P=0.05。现代模型推荐重点微调 --min-p（如设定为 0.05），它比传统的 Top-P 过滤错词的效果要更优秀、更自然。
 
 存在惩罚 (--presence-penalty)
 说明： 针对“是否出现过”的词进行惩罚。数值越高，模型越倾向于谈论全新的话题。
+建议： 默认 0.00（官方默认，不启用）。
 
 7. 高级采样
 
 重复惩罚 (--repeat-penalty)
 说明： 针对“频繁重复使用”的词或句子进行惩罚。
-建议： 默认留空。如果你发现模型陷入了“车轱辘话”复读机状态，可以将其设置为 1.1 或 1.2 予以遏制。
+建议： 默认 1.00（官方默认，不启用）。如果发现模型陷入“车轱辘话”复读机状态，可以将其设置为 1.1 或 1.2 予以遏制。
 
 重复惩罚范围 (--repeat-last-n)
-说明： 指定惩罚时往回倒查多少个 Token。默认留空（通常为 64）。
+说明： 指定惩罚时往回倒查多少个 Token。
+建议： 默认 64（官方默认）。
 
 随机种子 (-s, --seed)
 说明： 随机数发生器的种子。
-建议： 默认留空（每次对话回答都不同）。如果填写一个固定数字（如 42），在相同输入和相同温度下，模型每次生成的回答将完全一模一样（常用于Debug测试）。
+建议： 默认 -1（LLAMA_DEFAULT_SEED，每次对话回答都不同）。如果填写一个固定数字（如 42），在相同输入和相同温度下，模型每次生成的回答将完全一模一样（常用于Debug测试）。
 """
         txt.insert(tk.END, help_content)
         txt.config(state=tk.DISABLED)
@@ -555,6 +599,8 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
                                 v = "off"
                             if k == "reasoning_format" and v not in ["", "none", "deepseek", "deepseek-legacy"]:
                                 v = ""
+                            if k == "reasoning_effort" and v not in ["", "default", "minimal", "low", "medium", "high", "xhigh", "max"]:
+                                v = ""
                             var.set(v)
                 
                 self.current_config_file = filepath
@@ -620,6 +666,7 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
             ("cache_ram", "--cache-ram", False),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
             ("reasoning", "--reasoning", False),
+            ("reasoning_effort", "--reasoning-effort", False),
             ("reasoning_budget", "--reasoning-budget", False),
             ("reasoning_format", "--reasoning-format", False),
             ("reasoning_preserve", "--reasoning-preserve", True),
@@ -634,7 +681,11 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
             ("repeat_penalty", "--repeat-penalty", False),
             ("repeat_last_n", "--repeat-last-n", False),
             ("seed", "-s", False),
-            ("kwargs", "--chat-template-kwargs", False)
+            ("kwargs", "--chat-template-kwargs", False),
+            ("spec_type", "--spec-type", False),
+            ("draft_model", "--model-draft", False),
+            ("draft_max", "--draft-max", False),
+            ("draft_min", "--draft-min", False)
         ]
 
         for var_key, flag, is_boolean in mappings:
@@ -645,8 +696,10 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
                 if val:  
                     cmd.append(flag)
             else:
-                if isinstance(val, str) and val.strip():
-                    cmd.extend([flag, val.strip()])
+                if not isinstance(val, str): continue
+                val = val.strip()
+                if not val: continue
+                cmd.extend([flag, val])
                     
         return cmd
 
