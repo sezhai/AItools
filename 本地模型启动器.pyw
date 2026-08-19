@@ -233,8 +233,8 @@ class LlamaLauncherApp:
         self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "none", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache"], "", "spec_type")
         self.create_file_row(g_spec, "草稿模型路径 (--model-draft):", "", "draft_model",
                              filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
-        self.create_input_row(g_spec, "草稿最大Tokens (--draft-max):", "", "draft_max")
-        self.create_input_row(g_spec, "草稿最小Tokens (--draft-min):", "", "draft_min")
+        self.create_input_row(g_spec, "草稿最大Tokens (--spec-draft-n-max):", "", "draft_max")
+        self.create_input_row(g_spec, "草稿最小Tokens (--spec-draft-n-min):", "", "draft_min")
 
         # --- 6. 采样设置 ---
         g_sample = ttk.LabelFrame(self.left_frame, text="采样设置")
@@ -477,7 +477,7 @@ dio：直接 I/O 方式，一次性将整个模型完整读入，启动慢但运
 说明： 草稿模型类投机解码所需的草稿模型或 MTP 头文件（.gguf）。
 建议： 选择 draft-simple / draft-mtp / draft-eagle3 / draft-dflash / draft-dspark 时必填；选 ngram 系列时无需填写。若草稿 GGUF 自带元数据，留空时程序也可尝试自动推断类型。
 
-草稿最大/最小Tokens (--draft-max / --draft-min)
+草稿最大/最小Tokens (--spec-draft-n-max / --spec-draft-n-min)
 说明： 单次投机解码草稿的 token 数量范围。
 建议： 一般保持默认；草稿越长收益越大但开销也越高。
 
@@ -684,8 +684,8 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
             ("kwargs", "--chat-template-kwargs", False),
             ("spec_type", "--spec-type", False),
             ("draft_model", "--model-draft", False),
-            ("draft_max", "--draft-max", False),
-            ("draft_min", "--draft-min", False)
+            ("draft_max", "--spec-draft-n-max", False),
+            ("draft_min", "--spec-draft-n-min", False)
         ]
 
         for var_key, flag, is_boolean in mappings:
