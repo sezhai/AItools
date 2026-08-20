@@ -241,8 +241,8 @@ class LlamaLauncherApp:
         g_sample.pack(fill=tk.X, padx=5, pady=5)
         self.create_input_row(g_sample, "最大生成数 (-n, --n-predict):", "-1", "n_predict")
         self.create_input_row(g_sample, "温度 (--temp):", "0.80", "temp")
-        self.create_input_row(g_sample, "Top-K采样 (--top-k):", "40", "top_k")
         self.create_input_row(g_sample, "Top-P采样 (--top-p):", "0.95", "top_p")
+        self.create_input_row(g_sample, "Top-K采样 (--top-k):", "40", "top_k")
         self.create_input_row(g_sample, "最小概率 (--min-p):", "0.05", "min_p")
         self.create_input_row(g_sample, "存在惩罚 (--presence-penalty):", "0.00", "presence_penalty")
 
@@ -674,8 +674,8 @@ Top-K采样 / Top-P采样 / 最小概率 (--min-p)
             ("jinja", "--jinja", True),
             ("n_predict", "-n", False),
             ("temp", "--temp", False),
-            ("top_k", "--top-k", False),
             ("top_p", "--top-p", False),
+            ("top_k", "--top-k", False),
             ("min_p", "--min-p", False),
             ("presence_penalty", "--presence-penalty", False),
             ("repeat_penalty", "--repeat-penalty", False),
