@@ -109,7 +109,7 @@ class LlamaLauncherApp:
         self.vars[var_key] = var
         ttk.Checkbutton(frame, text=label_text, variable=var).pack(anchor=tk.W)
 
-    def create_file_row(self, parent, label_text, default_val, var_key, filetypes=(("All files", "*.*"),)):
+    def create_file_row(self, parent, label_text, default_val, var_key, filetypes=(("All files", "*.*"),), initial_var_key=None):
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, padx=5, pady=2)
         ttk.Label(frame, text=label_text, width=31, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
@@ -123,9 +123,21 @@ class LlamaLauncherApp:
             current_path = var.get().strip()
             kwargs = {"filetypes": filetypes}
             
-            if current_path:
+            # 优先使用关联变量（如模型路径）的路径作为初始目录
+            if initial_var_key and initial_var_key in self.vars:
+                ref_path = self.vars[initial_var_key].get().strip()
+                if ref_path:
+                    if os.path.exists(ref_path):
+                        dir_path = os.path.dirname(ref_path) if os.path.isfile(ref_path) else ref_path
+                        if os.path.exists(dir_path):
+                            kwargs["initialdir"] = dir_path
+            
+            # 如果当前字段已有路径，也作为备选
+            if not kwargs.get("initialdir") and current_path:
                 if os.path.exists(current_path):
-                    kwargs["initialdir"] = os.path.dirname(current_path) if os.path.isfile(current_path) else current_path
+                    dir_path = os.path.dirname(current_path) if os.path.isfile(current_path) else current_path
+                    if os.path.exists(dir_path):
+                        kwargs["initialdir"] = dir_path
                 else:
                     parent_dir = os.path.dirname(current_path)
                     if os.path.exists(parent_dir):
@@ -173,8 +185,9 @@ class LlamaLauncherApp:
         self.create_dir_row(g_basic, "llama.cpp 所在目录:", "", "llama_dir")
         self.create_file_row(g_basic, "模型路径 (-m):", "", "model", 
                              filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
-        self.create_file_row(g_basic, "多模态投影文件 (--mmproj):", "", "mmproj", 
-                             filetypes=[("GGUF Projector", "*.gguf"), ("All files", "*.*")])
+        self.create_file_row(g_basic, "多模态投影文件 (--mmproj):", "", "mmproj",
+                             filetypes=[("GGUF Projector", "*.gguf"), ("All files", "*.*")],
+                             initial_var_key="model")
         self.create_input_row(g_basic, "监听地址 (--host):", "127.0.0.1", "host")
         self.create_input_row(g_basic, "监听端口 (--port):", "8080", "port")
 
