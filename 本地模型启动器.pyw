@@ -30,10 +30,12 @@ class LlamaLauncherApp:
         self.current_config_file = "llama_config.json"
         
         self.setup_ui()
+        # 窗口关闭协议：防止孤儿进程
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         # 启动时仅尝试加载默认的 llama_config.json (如果存在的话)
         self.load_settings()
-        # 启动时探测端口上是否已有服务器在运行
-        self.check_existing_server()
+        # 异步探测端口上是否已有服务器在运行（避免阻塞窗口显示）
+        self.root.after(300, self.check_existing_server)
 
     def setup_ui(self):
         # ====== 核心修复：禁用 Combobox 的默认滚轮事件，防止误触 ======
@@ -91,16 +93,19 @@ class LlamaLauncherApp:
         ttk.Label(frame, text=label_text, width=31, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
         var = tk.StringVar(value=default_val)
         self.vars[var_key] = var
-        ttk.Entry(frame, textvariable=var, width=20).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        entry = ttk.Entry(frame, textvariable=var, width=20)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        return entry
 
-    def create_combo_row(self, parent, label_text, values, default_val, var_key):
+    def create_combo_row(self, parent, label_text, values, default_val, var_key, readonly=False):
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, padx=5, pady=2)
         ttk.Label(frame, text=label_text, width=31, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
         var = tk.StringVar(value=default_val)
         self.vars[var_key] = var
-        cb = ttk.Combobox(frame, textvariable=var, values=values, width=20)
+        cb = ttk.Combobox(frame, textvariable=var, values=values, width=20, state="readonly" if readonly else "normal")
         cb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        return cb
         
     def create_check_row(self, parent, label_text, default_val, var_key):
         frame = ttk.Frame(parent)
@@ -148,6 +153,7 @@ class LlamaLauncherApp:
                 var.set(filepath)
                 
         ttk.Button(frame, text="浏览...", command=browse_file, width=8).pack(side=tk.LEFT)
+        return entry
 
     def create_dir_row(self, parent, label_text, default_val, var_key):
         frame = ttk.Frame(parent)
@@ -205,10 +211,10 @@ class LlamaLauncherApp:
         # --- 3. 推理/思考模式 ---
         g_reason = ttk.LabelFrame(self.left_frame, text="推理/思考模式")
         g_reason.pack(fill=tk.X, padx=5, pady=5)
-        self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["", "on", "off", "auto"], "auto", "reasoning")
-        self.create_combo_row(g_reason, "思考力度 (--reasoning-effort):", ["", "default", "minimal", "low", "medium", "high", "xhigh", "max"], "default", "reasoning_effort")
-        self.create_input_row(g_reason, "思考预算 (--reasoning-budget):", "-1", "reasoning_budget")
-        self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["", "auto", "none", "deepseek", "deepseek-legacy"], "auto", "reasoning_format")
+        self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["on", "off", "auto"], "auto", "reasoning", readonly=True)
+        self.create_combo_row(g_reason, "思考力度 (--reasoning-effort):", ["default", "minimal", "low", "medium", "high", "xhigh", "max"], "default", "reasoning_effort", readonly=True)
+        self.create_input_row(g_reason, "思考预算 (--reasoning-budget):", "", "reasoning_budget")
+        self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["auto", "none", "deepseek", "deepseek-legacy"], "auto", "reasoning_format", readonly=True)
         self.create_input_row(g_reason, "思考预算耗尽消息:", "", "reasoning_exhausted")
         self.create_check_row(g_reason, "保留思考内容 (--reasoning-preserve)", False, "reasoning_preserve")
 
@@ -217,14 +223,15 @@ class LlamaLauncherApp:
         g_perf.pack(fill=tk.X, padx=5, pady=5)
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
-        self.create_combo_row(g_perf, "Flash Attention (-fa):", ["", "on", "off", "auto"], "auto", "fa")
-        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["", "q8_0", "f16", "q4_0", "q4_1"], "f16", "ctk")
-        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["", "q8_0", "f16", "q4_0", "q4_1"], "f16", "ctv")
+        self.create_combo_row(g_perf, "Flash Attention (-fa):", ["on", "off", "auto"], "auto", "fa", readonly=True)
+        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["q8_0", "f16", "q4_0", "q4_1"], "f16", "ctk", readonly=True)
+        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["q8_0", "f16", "q4_0", "q4_1"], "f16", "ctv", readonly=True)
         # 🟢 新增：KV 缓存优化开关
-        self.create_check_row(g_perf, "优化/卸载KV缓存 (-kvo)", False, "kvo")
-        self.create_combo_row(g_perf, "加载模式 (--load-mode):", ["", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio"], "auto", "load_mode")
-        self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "8192", "cache_ram")
-        self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "32", "ctx_checkpoints")
+        self.create_check_row(g_perf, "优化/卸载KV缓存 (-kvo)", True, "kvo")
+        self.create_check_row(g_perf, "禁用内存映射 (--no-mmap)", False, "no_mmap")
+        self.create_check_row(g_perf, "锁定内存 (--mlock)", False, "mlock")
+        self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "", "cache_ram")
+        self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "8", "ctx_checkpoints")
 
         # --- 5. 请求控制与模板 ---
         g_req = ttk.LabelFrame(self.left_frame, text="请求控制与模板")
@@ -239,11 +246,34 @@ class LlamaLauncherApp:
         # --- 5b. 投机解码 ---
         g_spec = ttk.LabelFrame(self.left_frame, text="投机解码")
         g_spec.pack(fill=tk.X, padx=5, pady=5)
-        self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "none", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache"], "", "spec_type")
-        self.create_file_row(g_spec, "草稿模型路径 (--model-draft):", "", "draft_model",
+        self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache"], "", "spec_type", readonly=True)
+        entry_draft_model = self.create_file_row(g_spec, "草稿模型路径 (--model-draft):", "", "draft_model",
                              filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
-        self.create_input_row(g_spec, "草稿最大Tokens (--spec-draft-n-max):", "", "draft_max")
-        self.create_input_row(g_spec, "草稿最小Tokens (--spec-draft-n-min):", "", "draft_min")
+        entry_draft_max = self.create_input_row(g_spec, "草稿最大Tokens (--spec-draft-n-max):", "", "draft_max")
+        entry_draft_min = self.create_input_row(g_spec, "草稿最小Tokens (--spec-draft-n-min):", "", "draft_min")
+        # 草稿参数仅在 draft-* 模式下有效，其余自动禁用/忽略
+        self._draft_entries = [entry_draft_model, entry_draft_max, entry_draft_min]
+        # 按钮在 file_row 的父 Frame 内，需一并禁用
+        self._draft_frames = [entry_draft_model.master, entry_draft_max.master, entry_draft_min.master]
+        def _update_draft_state(*_):
+            spec = self.vars["spec_type"].get().strip()
+            is_draft = spec.startswith("draft")
+            state = "normal" if is_draft else "disabled"
+            for ent in self._draft_entries:
+                try:
+                    ent.configure(state=state)
+                except tk.TclError:
+                    pass
+            for frm in self._draft_frames:
+                for child in frm.winfo_children():
+                    if isinstance(child, ttk.Button):
+                        try:
+                            child.configure(state=state)
+                        except tk.TclError:
+                            pass
+        self.vars["spec_type"].trace_add("write", _update_draft_state)
+        # 初始化状态（需在 trace 之后）
+        self.root.after(100, _update_draft_state)
 
         # --- 6. 采样设置 ---
         g_sample = ttk.LabelFrame(self.left_frame, text="采样设置")
@@ -355,7 +385,7 @@ llama.cpp 所在目录
 
 上下文长度 (-c, --ctx-size)
 说明： 模型能记住的上下文总长度（包含“你的问题”+“模型的回答”的总 Token 数）。
-建议： 默认 0（使用模型训练时的上下文长度）。显存充足可设为 16384、32768 或更大。
+建议： 默认 16384。下拉提供 16384~262144 预设，也可手输自定义值；显存充足可设更大。
 
 GPU 加速层数 (-ngl)
 说明： 卸载到显卡（GPU）中计算的模型层数。
@@ -391,8 +421,8 @@ KV 缓存优化/卸载 (-kvo)
 说明： 针对长上下文的 KV 缓存调度与卸载优化。
 建议： 勾选开启。在跑 32K ~ 256K 超大上下文时，协助动态优化与调度 KV 缓存，防止显存瞬时溢出。
 
-加载模式 (--load-mode)
-说明： 模型加载方式。推荐 mmap 或 mlock。
+内存映射与锁定 (--no-mmap / --mlock)
+说明： --no-mmap 禁用 mmap（大模型/网络盘建议勾选，需更多 RAM）；--mlock 将模型锁定在内存防止交换，需管理员权限。二者可同时勾选，对应批处理脚本中的 --no-mmap --mlock 组合。
 
 5. 请求控制与模板
 并发槽位数 (-np)：单机填 1。
@@ -408,12 +438,7 @@ KV 缓存优化/卸载 (-kvo)
         txt.config(state=tk.DISABLED)
 
     def open_webui(self):
-        host = self.vars.get("host").get().strip() or "127.0.0.1"
-        port = self.vars.get("port").get().strip() or "8080"
-        
-        if host == "0.0.0.0":
-            host = "127.0.0.1"
-            
+        host, port = self._current_host_port()
         url = f"http://{host}:{port}"
         try:
             webbrowser.open(url)
@@ -422,12 +447,15 @@ KV 缓存优化/卸载 (-kvo)
             self.append_log(f"\n[错误] 无法打开浏览器: {str(e)}\n")
 
     def update_process_info(self, is_running, pid="-"):
-        if is_running:
-            self.lbl_run_status.config(text="运行状态: 是")
-            self.lbl_pid.config(text=f"PID: {pid}")
-        else:
-            self.lbl_run_status.config(text="运行状态: 否")
-            self.lbl_pid.config(text="PID: -")
+        try:
+            if is_running:
+                self.lbl_run_status.config(text="运行状态: 是")
+                self.lbl_pid.config(text=f"PID: {pid}")
+            else:
+                self.lbl_run_status.config(text="运行状态: 否")
+                self.lbl_pid.config(text="PID: -")
+        except tk.TclError:
+            pass
 
     def load_config_dialog(self):
         initial_dir = os.path.dirname(os.path.abspath(self.current_config_file)) if self.current_config_file else "."
@@ -470,7 +498,18 @@ KV 缓存优化/卸载 (-kvo)
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     config_data = json.load(f)
+                # 旧版 load_mode 兼容迁移 -> no_mmap / mlock
+                if "load_mode" in config_data and "load_mode" not in self.vars:
+                    _lm = str(config_data.get("load_mode", "")).strip()
+                    if "mlock" in _lm and "mlock" in self.vars:
+                        self.vars["mlock"].set(True)
+                    if _lm == "dio":
+                        # dio 无直接对应，降级为 --no-mmap
+                        if "no_mmap" in self.vars:
+                            self.vars["no_mmap"].set(True)
                 for k, v in config_data.items():
+                    if k == "load_mode":
+                        continue
                     if k in self.vars:
                         var = self.vars[k]
                         if isinstance(var, tk.BooleanVar):
@@ -481,9 +520,13 @@ KV 缓存优化/卸载 (-kvo)
                         else:
                             if k == "reasoning" and v == "":
                                 v = "off"
-                            if k == "reasoning_format" and v not in ["", "none", "deepseek", "deepseek-legacy"]:
-                                v = ""
+                            if k == "reasoning_format" and v not in ["auto", "none", "deepseek", "deepseek-legacy"]:
+                                v = "auto"
+                            if k in ("ctk", "ctv") and v == "":
+                                v = "f16"
                             if k == "reasoning_effort" and v not in ["", "default", "minimal", "low", "medium", "high", "xhigh", "max"]:
+                                v = "default"
+                            if k == "spec_type" and v == "none":
                                 v = ""
                             var.set(v)
                 
@@ -547,7 +590,8 @@ KV 缓存优化/卸载 (-kvo)
             ("keep", "--keep", False),
             ("embedding", "--embedding", True),
             ("reranking", "--reranking", True),
-            ("load_mode", "--load-mode", False),
+            ("no_mmap", "--no-mmap", True),
+            ("mlock", "--mlock", True),
             ("cache_ram", "--cache-ram", False),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
             ("reasoning", "--reasoning", False),
@@ -573,9 +617,15 @@ KV 缓存优化/卸载 (-kvo)
             ("draft_min", "--spec-draft-n-min", False)
         ]
 
+        # 投机解码：仅 draft-* 需要 draft 相关参数
+        _spec = self.vars.get("spec_type", tk.StringVar(value="")).get().strip() if "spec_type" in self.vars else ""
+        _is_draft = _spec.startswith("draft")
+
         for var_key, flag, is_boolean in mappings:
             if var_key not in self.vars: continue
-            
+            # 非 draft 模式下忽略草稿参数，避免无效命令行
+            if var_key in ("draft_model", "draft_max", "draft_min") and not _is_draft:
+                continue
             val = self.vars[var_key].get()
             if is_boolean:
                 if val:  
@@ -607,7 +657,7 @@ KV 缓存优化/卸载 (-kvo)
             base_name = os.path.splitext(os.path.basename(self.current_config_file))[0]
             bat_name = f"start_server_{base_name}.bat"
             
-            with open(bat_name, "w", encoding="utf-8") as f:
+            with open(bat_name, "w", encoding="utf-8-sig") as f:
                 f.write(script_content)
             messagebox.showinfo("成功", f"已在当前目录生成独立启动脚本：\n{bat_name}")
         except Exception as e:
@@ -632,8 +682,11 @@ KV 缓存优化/卸载 (-kvo)
         host, port = self._current_host_port()
         if self.detect_server():
             self._external_running = True
-            self.lbl_status.config(text=f"检测到服务器已在运行 ({host}:{port})", fg="orange")
-            self.start_btn.config(text="⏹ 停止服务器")
+            try:
+                self.lbl_status.config(text=f"检测到服务器已在运行 ({host}:{port})", fg="orange")
+                self.start_btn.config(text="⏹ 停止服务器")
+            except tk.TclError:
+                pass
             self.append_log(f"[系统] 检测到 {host}:{port} 已有服务器在运行。\n")
 
     def _find_pid_on_port(self, host, port):
@@ -657,6 +710,8 @@ KV 缓存优化/卸载 (-kvo)
         host, port = self._current_host_port()
         pid = self._find_pid_on_port(host, port)
         if pid:
+            if not messagebox.askyesno("确认", f"检测到端口 {port} 被 PID {pid} 占用。\n确定要终止该进程吗？"):
+                return
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/PID", str(pid)],
@@ -667,11 +722,33 @@ KV 缓存优化/卸载 (-kvo)
             except Exception as e:
                 self.append_log(f"[错误] 无法终止外部服务器: {str(e)}\n")
         else:
-            self.append_log("[系统] 未能定位到监听该端口的进程，请手动关闭。\n")
+            if not messagebox.askyesno("确认", f"未定位到端口 {port} 的监听进程。\n是否重置界面状态？"):
+                return
+            self.append_log("[系统] 未能定位到监听该端口的进程，已重置状态。\n")
         self._external_running = False
-        self.lbl_status.config(text="未运行", fg="red")
-        self.start_btn.config(text="▶ 启动服务器")
+        try:
+            self.lbl_status.config(text="未运行", fg="red")
+            self.start_btn.config(text="▶ 启动服务器")
+        except tk.TclError:
+            pass
         self.update_process_info(False)
+
+    def on_close(self):
+        """窗口关闭处理：防止孤儿进程"""
+        if self._running and self._current_proc and self._current_proc.poll() is None:
+            if not messagebox.askyesno("确认退出", "服务器仍在运行，关闭窗口将终止服务器。\n确定要退出吗？"):
+                return
+            try:
+                self._current_proc.terminate()
+            except Exception:
+                pass
+        elif self._external_running:
+            if not messagebox.askyesno("确认退出", "检测到外部服务器在运行。\n确定要退出启动器吗？"):
+                return
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def toggle_server(self):
         if self._external_running:
@@ -682,11 +759,17 @@ KV 缓存优化/卸载 (-kvo)
                 self._current_proc.terminate()
             self._running = False
             self.append_log("\n[系统] 正在终止服务器进程...")
-            self.start_btn.config(text="▶ 启动服务器")
-            self.lbl_status.config(text="未运行", fg="red")
+            try:
+                self.start_btn.config(text="▶ 启动服务器")
+                self.lbl_status.config(text="未运行", fg="red")
+            except tk.TclError:
+                pass
             self.update_process_info(False)
         else:
-            self.log_text.delete(1.0, tk.END)
+            try:
+                self.log_text.delete(1.0, tk.END)
+            except tk.TclError:
+                pass
             self.start_server()
 
     def start_server(self):
@@ -695,11 +778,20 @@ KV 缓存优化/卸载 (-kvo)
         self.append_log(f"[系统] 正在执行后台命令:\n{' '.join(cmd)}\n")
         self.append_log("-" * 60 + "\n")
 
-        self.start_btn.config(text="⏹ 停止服务器")
-        self.lbl_status.config(text="运行中", fg="green")
+        try:
+            self.start_btn.config(text="⏹ 停止服务器")
+            self.lbl_status.config(text="运行中", fg="green")
+        except tk.TclError:
+            pass
         self._running = True
         
         threading.Thread(target=self.run_process, args=(cmd,), daemon=True).start()
+
+    def _safe_after(self, ms, func, *args):
+        try:
+            self.root.after(ms, func, *args)
+        except tk.TclError:
+            pass
 
     def run_process(self, cmd):
         proc = None
@@ -716,33 +808,39 @@ KV 缓存优化/卸载 (-kvo)
             )
             
             self._current_proc = proc
-            self.root.after(0, self.update_process_info, True, proc.pid)
+            self._safe_after(0, self.update_process_info, True, proc.pid)
 
             for line in proc.stdout:
-                self.root.after(0, self.append_log, line)
+                self._safe_after(0, self.append_log, line)
 
             proc.wait()
             if self._current_proc is proc:
                 self._current_proc = None
-                self.root.after(0, self.server_stopped)
+                self._safe_after(0, self.server_stopped)
 
         except FileNotFoundError:
-            self.root.after(0, self.append_log, "\n[错误] 在指定的目录下找不到执行程序 (llama.exe 或 llama-server.exe)！\n请确保 llama.cpp 目录选择正确。\n")
-            self.root.after(0, self.server_stopped)
+            self._safe_after(0, self.append_log, "\n[错误] 在指定的目录下找不到执行程序 (llama.exe 或 llama-server.exe)！\n请确保 llama.cpp 目录选择正确。\n")
+            self._safe_after(0, self.server_stopped)
         except Exception as e:
-            self.root.after(0, self.append_log, f"\n[错误] 发生异常: {str(e)}\n")
-            self.root.after(0, self.server_stopped)
+            self._safe_after(0, self.append_log, f"\n[错误] 发生异常: {str(e)}\n")
+            self._safe_after(0, self.server_stopped)
 
     def server_stopped(self):
         self._running = False
-        self.start_btn.config(text="▶ 启动服务器")
-        self.lbl_status.config(text="未运行", fg="red")
+        try:
+            self.start_btn.config(text="▶ 启动服务器")
+            self.lbl_status.config(text="未运行", fg="red")
+        except tk.TclError:
+            pass
         self.update_process_info(False)
         self.append_log("\n[系统] 服务器进程已结束。\n")
 
     def append_log(self, text):
-        self.log_text.insert(tk.END, text)
-        self.log_text.see(tk.END)
+        try:
+            self.log_text.insert(tk.END, text)
+            self.log_text.see(tk.END)
+        except tk.TclError:
+            pass
 
 if __name__ == "__main__":
     root = tk.Tk()
