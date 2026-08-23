@@ -194,7 +194,7 @@ class LlamaLauncherApp:
         # --- 2. 模型参数 ---
         g_model = ttk.LabelFrame(self.left_frame, text="模型参数")
         g_model.pack(fill=tk.X, padx=5, pady=5)
-        self.create_input_row(g_model, "上下文长度 (-c, --ctx-size):", "0", "ctx")
+        self.create_combo_row(g_model, "上下文长度 (-c, --ctx-size):", ["16384", "24576", "32768", "65536", "81920", "98304", "131072", "262144"], "16384", "ctx")
         self.create_input_row(g_model, "图像最小Tokens (--image-min-tokens):", "", "image_min_tokens")
         self.create_input_row(g_model, "GPU加速层数 (-ngl):", "", "ngl")
         # 🟢 新增：CPU MoE专家分流层数
