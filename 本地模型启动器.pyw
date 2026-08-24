@@ -398,12 +398,19 @@ CPU MoE 专家层数 (-ncmoe, --n-cpu-moe)
 批处理大小 (-b) 与 物理批处理大小 (-ub)
 说明： 控制提示词吞吐与硬件批处理大小（默认 -b 2048, -ub 512）。处理超长文档可调大 -ub 提升读取速度。
 
+图像最小Tokens (--image-min-tokens)
+说明： 限制多模态模型单张图片消耗的最小 Token 数，控制视觉请求的显存占用。
+建议： 一般留空即可；视觉请求显存吃紧时可设为 1024 等值限制。
+
 3. 推理/思考模式
 专门针对推理型大模型（如 DeepSeek-R1 等带有思考过程的模型）设计的选项。
 
 推理模式 (--reasoning)：可选 on / off / auto。
 思考力度 (--reasoning-effort)：default / minimal / low / medium / high / xhigh / max。
 思考格式 (--reasoning-format)：auto / none / deepseek / deepseek-legacy。
+思考预算 (--reasoning-budget)：限制单次回复可用的思考 Token 数，-1 表示不限制。留空使用程序默认。
+思考预算耗尽消息 (--reasoning-budget-message)：预算用尽后附加的提示文本，留空不传。
+保留思考内容 (--reasoning-preserve)：勾选后思考内容完整保留在响应中，不勾则折叠。
 
 4. 性能与内存
 用于极限压榨硬件性能，或在低配设备上通过降低精度挽救显存。
@@ -423,6 +430,12 @@ KV 缓存优化/卸载 (-kvo)
 
 内存映射与锁定 (--no-mmap / --mlock)
 说明： --no-mmap 禁用 mmap（大模型/网络盘建议勾选，需更多 RAM）；--mlock 将模型锁定在内存防止交换，需管理员权限。二者可同时勾选，对应批处理脚本中的 --no-mmap --mlock 组合。
+
+缓存 RAM 限制 (--cache-ram)
+说明： 限制 KV/计算缓存可用的主机内存大小（MiB）。留空使用程序默认。
+
+上下文检查点 (--ctx-checkpoints)
+说明： 长上下文场景下 KV 检查点的数量，用于回退与恢复。默认 8 即可，超大上下文可适当调大。
 
 5. 请求控制与模板
 并发槽位数 (-np)：单机填 1。
@@ -524,7 +537,7 @@ KV 缓存优化/卸载 (-kvo)
                                 v = "auto"
                             if k in ("ctk", "ctv") and v == "":
                                 v = "f16"
-                            if k == "reasoning_effort" and v not in ["", "default", "minimal", "low", "medium", "high", "xhigh", "max"]:
+                            if k == "reasoning_effort" and v not in ["default", "minimal", "low", "medium", "high", "xhigh", "max"]:
                                 v = "default"
                             if k == "spec_type" and v == "none":
                                 v = ""
@@ -618,8 +631,7 @@ KV 缓存优化/卸载 (-kvo)
         ]
 
         # 投机解码：仅 draft-* 需要 draft 相关参数
-        _spec = self.vars.get("spec_type", tk.StringVar(value="")).get().strip() if "spec_type" in self.vars else ""
-        _is_draft = _spec.startswith("draft")
+        _is_draft = self.vars["spec_type"].get().strip().startswith("draft")
 
         for var_key, flag, is_boolean in mappings:
             if var_key not in self.vars: continue
@@ -641,10 +653,12 @@ KV 缓存优化/卸载 (-kvo)
     def export_script(self):
         cmd_list = self.build_command()
         
+        # BAT 特殊字符：出现任一则必须加引号
+        _bat_special = set(' &|<>()^!;=,')
         safe_cmd = []
         for item in cmd_list:
             item = item.replace("%", "%%")
-            if " " in item or "{" in item:
+            if " " in item or any(c in _bat_special for c in item.replace("%%", "")):
                 escaped = item.replace('"', '\\"')
                 safe_cmd.append(f'"{escaped}"')
             else:
@@ -713,12 +727,15 @@ KV 缓存优化/卸载 (-kvo)
             if not messagebox.askyesno("确认", f"检测到端口 {port} 被 PID {pid} 占用。\n确定要终止该进程吗？"):
                 return
             try:
-                subprocess.run(
+                kill = subprocess.run(
                     ["taskkill", "/F", "/PID", str(pid)],
                     capture_output=True, text=True,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 )
-                self.append_log(f"[系统] 已终止外部服务器进程 (PID {pid})。\n")
+                if kill.returncode == 0:
+                    self.append_log(f"[系统] 已终止外部服务器进程 (PID {pid})。\n")
+                else:
+                    self.append_log(f"[错误] 终止进程 (PID {pid}) 失败: {kill.stderr.strip() or '返回码 ' + str(kill.returncode)}\n")
             except Exception as e:
                 self.append_log(f"[错误] 无法终止外部服务器: {str(e)}\n")
         else:
