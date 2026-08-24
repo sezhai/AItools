@@ -224,14 +224,15 @@ class LlamaLauncherApp:
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
         self.create_combo_row(g_perf, "Flash Attention (-fa):", ["on", "off", "auto"], "auto", "fa", readonly=True)
-        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["q8_0", "f16", "q4_0", "q4_1"], "f16", "ctk", readonly=True)
-        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["q8_0", "f16", "q4_0", "q4_1"], "f16", "ctv", readonly=True)
+        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctk", readonly=True)
+        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctv", readonly=True)
         # 🟢 新增：KV 缓存优化开关
         self.create_check_row(g_perf, "优化/卸载KV缓存 (-kvo)", True, "kvo")
-        self.create_check_row(g_perf, "禁用内存映射 (--no-mmap)", False, "no_mmap")
-        self.create_check_row(g_perf, "锁定内存 (--mlock)", False, "mlock")
+        # 🟢 新版 llama.cpp：--no-mmap / --mlock 已废弃，统一为 --load-mode
+        self.create_combo_row(g_perf, "加载模式 (-lm, --load-mode):", ["", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio"], "", "load_mode", readonly=True)
         self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "", "cache_ram")
-        self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "8", "ctx_checkpoints")
+        # 🟢 新版默认为 32，留空即用程序默认
+        self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "", "ctx_checkpoints")
 
         # --- 5. 请求控制与模板 ---
         g_req = ttk.LabelFrame(self.left_frame, text="请求控制与模板")
@@ -246,7 +247,8 @@ class LlamaLauncherApp:
         # --- 5b. 投机解码 ---
         g_spec = ttk.LabelFrame(self.left_frame, text="投机解码")
         g_spec.pack(fill=tk.X, padx=5, pady=5)
-        self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache"], "", "spec_type", readonly=True)
+        # 🟢 新版支持逗号分隔多类型组合（如 draft-mtp,ngram-mod），故下拉允许手输
+        self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache", "ngram-map-k", "ngram-map-k4v"], "", "spec_type")
         entry_draft_model = self.create_file_row(g_spec, "草稿模型路径 (--model-draft):", "", "draft_model",
                              filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
         entry_draft_max = self.create_input_row(g_spec, "草稿最大Tokens (--spec-draft-n-max):", "", "draft_max")
@@ -422,30 +424,31 @@ Flash Attention (-fa)
 说明： 闪烁注意力机制。默认 auto，强烈建议开启，大幅降低显存并提速。
 
 KV Cache 类型 K (-ctk) 与 类型 V (-ctv)
-说明： 上下文缓存量化数据类型。默认 f16，显存紧张时设为 q8_0 或 q4_0 释放巨量显存。
+说明： 上下文缓存量化数据类型，可选 f32 / f16 / bf16 / q8_0 / q4_0 / q4_1 / q5_0 / q5_1 / iq4_nl。默认 f16，显存紧张时设为 q8_0 或更低精度释放巨量显存。
 
 KV 缓存优化/卸载 (-kvo)
 说明： 针对长上下文的 KV 缓存调度与卸载优化。
 建议： 勾选开启。在跑 32K ~ 256K 超大上下文时，协助动态优化与调度 KV 缓存，防止显存瞬时溢出。
 
-内存映射与锁定 (--no-mmap / --mlock)
-说明： --no-mmap 禁用 mmap（大模型/网络盘建议勾选，需更多 RAM）；--mlock 将模型锁定在内存防止交换，需管理员权限。二者可同时勾选，对应批处理脚本中的 --no-mmap --mlock 组合。
+加载模式 (-lm, --load-mode)
+说明： 新版统一加载模式，已取代废弃的 --no-mmap / --mlock / --direct-io。可选值：auto（默认，自动选择）、none（普通读入，占用更多 RAM）、mmap（内存映射）、mlock（锁定物理 RAM 防止交换，不映射文件）、mmap+mlock（映射并锁定）、dio（DirectIO 直读，适合 NVMe 固态）。
+建议： 一般留空即可；希望模型常驻内存、避免推理卡顿可选 mlock 或 mmap+mlock（Windows 下需要足够的进程工作集配额）。
 
 缓存 RAM 限制 (--cache-ram)
 说明： 限制 KV/计算缓存可用的主机内存大小（MiB）。留空使用程序默认。
 
 上下文检查点 (--ctx-checkpoints)
-说明： 长上下文场景下 KV 检查点的数量，用于回退与恢复。默认 8 即可，超大上下文可适当调大。
+说明： 长上下文场景下 KV 检查点的数量，用于回退与恢复。新版默认为 32，留空即用程序默认；显存紧张可调小（如 8）。
 
 5. 请求控制与模板
 并发槽位数 (-np)：单机填 1。
-使用 Jinja 模板 (--jinja)：默认勾选，保证角色扮演和对话格式正确。
+使用 Jinja 模板 (--jinja)：新版已默认启用，勾选时不传参；取消勾选将传 --no-jinja 关闭模板引擎。
 启用向量嵌入 (--embedding) / 重排序 (--reranking)：外接专属知识库模型时勾选。
 
 5b. 投机解码
-投机解码可在不损失输出的前提下大幅提升生成速度。
-* 草稿模型类：draft-simple / draft-mtp 等（配合草稿模型或自带 MTP 头使用）。
-* n-gram 类：ngram-mod（无需额外模型，纯 CPU 零开销加速）。
+投机解码可在不损失输出的前提下大幅提升生成速度。支持逗号分隔多类型组合（如 draft-mtp,ngram-mod），可在下拉框中手输。
+* 草稿模型类：draft-simple / draft-eagle3 / draft-mtp / draft-dflash / draft-dspark（配合草稿模型或自带 MTP 头使用）。
+* n-gram 类：ngram-mod（无需额外模型，纯 CPU 零开销加速）、ngram-cache、ngram-simple、ngram-map-k、ngram-map-k4v（实验性）。
 """
         txt.insert(tk.END, help_content)
         txt.config(state=tk.DISABLED)
@@ -511,15 +514,24 @@ KV 缓存优化/卸载 (-kvo)
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     config_data = json.load(f)
-                # 旧版 load_mode 兼容迁移 -> no_mmap / mlock
-                if "load_mode" in config_data and "load_mode" not in self.vars:
+                # 🟢 新版迁移：旧配置的 no_mmap/mlock 布尔开关 -> load_mode
+                if "load_mode" in self.vars:
+                    _valid_lm = ("auto", "none", "mmap", "mlock", "mmap+mlock", "dio")
                     _lm = str(config_data.get("load_mode", "")).strip()
-                    if "mlock" in _lm and "mlock" in self.vars:
-                        self.vars["mlock"].set(True)
-                    if _lm == "dio":
-                        # dio 无直接对应，降级为 --no-mmap
-                        if "no_mmap" in self.vars:
-                            self.vars["no_mmap"].set(True)
+                    if _lm in _valid_lm:
+                        self.vars["load_mode"].set(_lm)
+                    else:
+                        def _as_bool(x):
+                            return str(x).strip().lower() in ("1", "true", "yes", "on")
+                        _had_old = ("no_mmap" in config_data) or ("mlock" in config_data)
+                        if _had_old:
+                            _mlock = _as_bool(config_data.get("mlock", False))
+                            _no_mmap = _as_bool(config_data.get("no_mmap", False))
+                            # 对应关系：--no-mmap --mlock 组合与单独 --mlock 均 -> mlock
+                            if _mlock:
+                                self.vars["load_mode"].set("mlock")
+                            elif _no_mmap:
+                                self.vars["load_mode"].set("none")
                 for k, v in config_data.items():
                     if k == "load_mode":
                         continue
@@ -603,8 +615,7 @@ KV 缓存优化/卸载 (-kvo)
             ("keep", "--keep", False),
             ("embedding", "--embedding", True),
             ("reranking", "--reranking", True),
-            ("no_mmap", "--no-mmap", True),
-            ("mlock", "--mlock", True),
+            ("load_mode", "--load-mode", False),   # 取代已废弃的 --no-mmap / --mlock
             ("cache_ram", "--cache-ram", False),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
             ("reasoning", "--reasoning", False),
@@ -613,7 +624,6 @@ KV 缓存优化/卸载 (-kvo)
             ("reasoning_format", "--reasoning-format", False),
             ("reasoning_preserve", "--reasoning-preserve", True),
             ("reasoning_exhausted", "--reasoning-budget-message", False),
-            ("jinja", "--jinja", True),
             ("n_predict", "-n", False),
             ("temp", "--temp", False),
             ("top_p", "--top-p", False),
@@ -647,7 +657,11 @@ KV 缓存优化/卸载 (-kvo)
                 val = val.strip()
                 if not val: continue
                 cmd.extend([flag, val])
-                    
+
+        # Jinja：新版 llama-server 已默认启用 --jinja；仅取消勾选时显式传 --no-jinja
+        if not self.vars["jinja"].get():
+            cmd.append("--no-jinja")
+
         return cmd
 
     def export_script(self):
