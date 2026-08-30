@@ -12,13 +12,13 @@ class LlamaLauncherApp:
         self.root = root
         self.root.title("llama.cpp 启动器")
         
-        # 窗口居中逻辑 (维持 1150x850 总大小)
-        window_width = 1150
-        window_height = 850
+        # 窗口自适应与居中逻辑 (最大 1180x880，小屏幕/高缩放下自适应屏幕高度)
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        x = int((screen_width - window_width) / 2)
-        y = int((screen_height - window_height) / 2)
+        window_width = min(1180, max(960, screen_width - 80))
+        window_height = min(880, max(680, screen_height - 100))
+        x = max(0, int((screen_width - window_width) / 2))
+        y = max(0, int((screen_height - window_height) / 2))
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
         self._running = False
@@ -58,9 +58,11 @@ class LlamaLauncherApp:
         self.canvas = tk.Canvas(self.left_frame_container, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(self.left_frame_container, orient="vertical", command=self.canvas.yview)
         
-        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
-        self.canvas.bind("<Button-4>", self._on_mousewheel)
-        self.canvas.bind("<Button-5>", self._on_mousewheel)
+        # 🟢 修复滚轮穿透：鼠标进入左侧容器时绑定全局滚轮，离开时解绑，解决悬停在输入框/标签时无法滚动的问题
+        self.left_frame_container.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._on_mousewheel))
+        self.left_frame_container.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+        self.left_frame_container.bind("<Button-4>", self._on_mousewheel)
+        self.left_frame_container.bind("<Button-5>", self._on_mousewheel)
 
         self.left_frame = ttk.Frame(self.canvas)
         self.left_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
@@ -81,16 +83,16 @@ class LlamaLauncherApp:
         self.build_right_panel()
 
     def _on_mousewheel(self, event):
-        if event.num == 4 or event.delta > 0:
+        if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
             self.canvas.yview_scroll(-1, "units")
-        elif event.num == 5 or event.delta < 0:
+        elif event.num == 5 or (hasattr(event, 'delta') and event.delta < 0):
             self.canvas.yview_scroll(1, "units")
 
     # ---- 统一控件生成，自动注册到 self.vars 字典 ----
     def create_input_row(self, parent, label_text, default_val, var_key):
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, padx=5, pady=2)
-        ttk.Label(frame, text=label_text, width=31, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(frame, text=label_text, width=32, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
         var = tk.StringVar(value=default_val)
         self.vars[var_key] = var
         entry = ttk.Entry(frame, textvariable=var, width=20)
@@ -100,7 +102,7 @@ class LlamaLauncherApp:
     def create_combo_row(self, parent, label_text, values, default_val, var_key, readonly=False):
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, padx=5, pady=2)
-        ttk.Label(frame, text=label_text, width=31, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(frame, text=label_text, width=32, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
         var = tk.StringVar(value=default_val)
         self.vars[var_key] = var
         cb = ttk.Combobox(frame, textvariable=var, values=values, width=20, state="readonly" if readonly else "normal")
@@ -117,7 +119,7 @@ class LlamaLauncherApp:
     def create_file_row(self, parent, label_text, default_val, var_key, filetypes=(("All files", "*.*"),), initial_var_key=None):
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, padx=5, pady=2)
-        ttk.Label(frame, text=label_text, width=31, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(frame, text=label_text, width=32, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
         var = tk.StringVar(value=default_val)
         self.vars[var_key] = var
         
@@ -158,7 +160,7 @@ class LlamaLauncherApp:
     def create_dir_row(self, parent, label_text, default_val, var_key):
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, padx=5, pady=2)
-        ttk.Label(frame, text=label_text, width=31, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(frame, text=label_text, width=32, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
         var = tk.StringVar(value=default_val)
         self.vars[var_key] = var
         
@@ -194,6 +196,9 @@ class LlamaLauncherApp:
         self.create_file_row(g_basic, "多模态投影文件 (--mmproj):", "", "mmproj",
                              filetypes=[("GGUF Projector", "*.gguf"), ("All files", "*.*")],
                              initial_var_key="model")
+        # 🟢 新增：模型别名与 API Key（适配各大客户端/OpenAI API）
+        self.create_input_row(g_basic, "模型别名 (-a, --alias):", "", "alias")
+        self.create_input_row(g_basic, "API 密钥 (--api-key):", "", "api_key")
         self.create_input_row(g_basic, "监听地址 (--host):", "127.0.0.1", "host")
         self.create_input_row(g_basic, "监听端口 (--port):", "8080", "port")
 
@@ -202,16 +207,20 @@ class LlamaLauncherApp:
         g_model.pack(fill=tk.X, padx=5, pady=5)
         self.create_combo_row(g_model, "上下文长度 (-c, --ctx-size):", ["16384", "24576", "32768", "65536", "81920", "98304", "131072", "262144"], "16384", "ctx")
         self.create_input_row(g_model, "图像最小Tokens (--image-min-tokens):", "", "image_min_tokens")
+        # 🟢 新增：图像最大Tokens限制
+        self.create_input_row(g_model, "图像最大Tokens (--image-max-tokens):", "", "image_max_tokens")
         self.create_input_row(g_model, "GPU加速层数 (-ngl):", "", "ngl")
-        # 🟢 新增：CPU MoE专家分流层数
+        # 🟢 MoE 与 FFN 专家分流
         self.create_input_row(g_model, "CPU MoE专家层数 (-ncmoe):", "", "ncmoe")
+        self.create_input_row(g_model, "CPU FFN稠密层数 (-ncffn):", "", "ncffn")
+        self.create_check_row(g_model, "全部MoE专家放CPU (-cmoe)", False, "cmoe")
         self.create_input_row(g_model, "批处理大小 (-b):", "2048", "b")
         self.create_input_row(g_model, "物理批处理大小 (-ub):", "512", "ub")
 
         # --- 3. 推理/思考模式 ---
         g_reason = ttk.LabelFrame(self.left_frame, text="推理/思考模式")
         g_reason.pack(fill=tk.X, padx=5, pady=5)
-        self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["on", "off", "auto"], "auto", "reasoning", readonly=True)
+        self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["auto", "on", "off"], "auto", "reasoning", readonly=True)
         self.create_combo_row(g_reason, "思考力度 (--reasoning-effort):", ["default", "minimal", "low", "medium", "high", "xhigh", "max"], "default", "reasoning_effort", readonly=True)
         self.create_input_row(g_reason, "思考预算 (--reasoning-budget):", "", "reasoning_budget")
         self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["auto", "none", "deepseek", "deepseek-legacy"], "auto", "reasoning_format", readonly=True)
@@ -221,17 +230,22 @@ class LlamaLauncherApp:
         # --- 4. 性能与内存 ---
         g_perf = ttk.LabelFrame(self.left_frame, text="性能与内存")
         g_perf.pack(fill=tk.X, padx=5, pady=5)
+        # 🟢 新增：计算设备指定 (多卡/核显防跑偏，如 CUDA0, 0, Vulkan0)
+        self.create_input_row(g_perf, "计算设备 (-dev, --device):", "", "device")
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
-        self.create_combo_row(g_perf, "Flash Attention (-fa):", ["on", "off", "auto"], "auto", "fa", readonly=True)
+        self.create_combo_row(g_perf, "Flash Attention (-fa):", ["auto", "on", "off"], "auto", "fa", readonly=True)
         self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctk", readonly=True)
         self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctv", readonly=True)
-        # 🟢 新增：KV 缓存优化开关
+        # 🟢 KV 缓存优化开关 (默认开启；取消勾选将传 --no-kv-offload)
         self.create_check_row(g_perf, "优化/卸载KV缓存 (-kvo)", True, "kvo")
-        # 🟢 新版 llama.cpp：--no-mmap / --mlock 已废弃，统一为 --load-mode
+        # 🟢 新增：缓存块重用 (多轮长对话/RAG首字加速，建议 256 或 512)
+        self.create_input_row(g_perf, "缓存块重用 (--cache-reuse):", "", "cache_reuse")
+        # 🟢 新版 llama.cpp：统一为 --load-mode
         self.create_combo_row(g_perf, "加载模式 (-lm, --load-mode):", ["", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio"], "", "load_mode", readonly=True)
+        # 🟢 新增：大张量按需读取 (节省大模型物理 RAM)
+        self.create_combo_row(g_perf, "大张量按需读取 (--tensor-read-lazy):", ["", "auto", "on", "off"], "", "tensor_read_lazy", readonly=True)
         self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "", "cache_ram")
-        # 🟢 新版默认为 32，留空即用程序默认
         self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "", "ctx_checkpoints")
 
         # --- 5. 请求控制与模板 ---
@@ -242,39 +256,57 @@ class LlamaLauncherApp:
         self.create_check_row(g_req, "启用向量嵌入 (--embedding)", False, "embedding")
         self.create_check_row(g_req, "启用重排序 (--reranking)", False, "reranking")
         self.create_check_row(g_req, "使用 Jinja 模板 (--jinja)", True, "jinja")
-        self.create_input_row(g_req, "对话模板 (--chat-template-kwargs):", "", "kwargs")
+        self.create_input_row(g_req, "指定模板名称 (--chat-template):", "", "chat_template")
+        self.create_input_row(g_req, "模板附加参数 (--chat-template-kwargs):", "", "kwargs")
 
         # --- 5b. 投机解码 ---
         g_spec = ttk.LabelFrame(self.left_frame, text="投机解码")
         g_spec.pack(fill=tk.X, padx=5, pady=5)
-        # 🟢 新版支持逗号分隔多类型组合（如 draft-mtp,ngram-mod），故下拉允许手输
         self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache", "ngram-map-k", "ngram-map-k4v"], "", "spec_type")
+        
         entry_draft_model = self.create_file_row(g_spec, "草稿模型路径 (--model-draft):", "", "draft_model",
                              filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
         entry_draft_max = self.create_input_row(g_spec, "草稿最大Tokens (--spec-draft-n-max):", "", "draft_max")
         entry_draft_min = self.create_input_row(g_spec, "草稿最小Tokens (--spec-draft-n-min):", "", "draft_min")
-        # 草稿参数仅在 draft-* 模式下有效，其余自动禁用/忽略
-        self._draft_entries = [entry_draft_model, entry_draft_max, entry_draft_min]
-        # 按钮在 file_row 的父 Frame 内，需一并禁用
-        self._draft_frames = [entry_draft_model.master, entry_draft_max.master, entry_draft_min.master]
+        # 🟢 新增：极关键的投机解码置信度门限（防止吞吐雪崩）及草稿KV缓存类型
+        entry_draft_p_min = self.create_input_row(g_spec, "草稿最小概率 (--spec-draft-p-min):", "", "draft_p_min")
+        combo_draft_ctk = self.create_combo_row(g_spec, "草稿K缓存类型 (-ctkd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctk", readonly=True)
+        combo_draft_ctv = self.create_combo_row(g_spec, "草稿V缓存类型 (-ctvd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctv", readonly=True)
+
+        # 智能控件联动：区分外挂草稿模型类 vs 内置MTP vs N-gram
+        self._ext_draft_entries = [entry_draft_model, combo_draft_ctk, combo_draft_ctv]
+        self._ext_draft_frames = [entry_draft_model.master, combo_draft_ctk.master, combo_draft_ctv.master]
+        self._general_spec_entries = [entry_draft_max, entry_draft_min, entry_draft_p_min]
+
         def _update_draft_state(*_):
             spec = self.vars["spec_type"].get().strip()
-            is_draft = spec.startswith("draft")
-            state = "normal" if is_draft else "disabled"
-            for ent in self._draft_entries:
+            is_active = bool(spec)
+            # 只有需要外挂草稿模型时才启用模型路径及草稿KV量化（draft-mtp 与 ngram 不需要独立模型文件）
+            is_ext_draft = is_active and ("draft" in spec) and (spec != "draft-mtp")
+            
+            # 通用投机参数（步长、门限）：只要开启投机解码即启用
+            for ent in self._general_spec_entries:
                 try:
-                    ent.configure(state=state)
+                    ent.configure(state="normal" if is_active else "disabled")
                 except tk.TclError:
                     pass
-            for frm in self._draft_frames:
+            
+            # 外部独立草稿模型参数
+            ext_state = "normal" if is_ext_draft else "disabled"
+            for ent in self._ext_draft_entries:
+                try:
+                    ent.configure(state=ext_state)
+                except tk.TclError:
+                    pass
+            for frm in self._ext_draft_frames:
                 for child in frm.winfo_children():
                     if isinstance(child, ttk.Button):
                         try:
-                            child.configure(state=state)
+                            child.configure(state=ext_state)
                         except tk.TclError:
                             pass
+
         self.vars["spec_type"].trace_add("write", _update_draft_state)
-        # 初始化状态（需在 trace 之后）
         self.root.after(100, _update_draft_state)
 
         # --- 6. 采样设置 ---
@@ -286,12 +318,17 @@ class LlamaLauncherApp:
         self.create_input_row(g_sample, "Top-K采样 (--top-k):", "40", "top_k")
         self.create_input_row(g_sample, "最小概率 (--min-p):", "0.05", "min_p")
         self.create_input_row(g_sample, "存在惩罚 (--presence-penalty):", "0.00", "presence_penalty")
+        # 🟢 新增：频率惩罚
+        self.create_input_row(g_sample, "频率惩罚 (--frequency-penalty):", "0.00", "frequency_penalty")
 
         # --- 7. 高级采样 ---
         g_adv = ttk.LabelFrame(self.left_frame, text="高级采样")
         g_adv.pack(fill=tk.X, padx=5, pady=5)
         self.create_input_row(g_adv, "重复惩罚 (--repeat-penalty):", "1.00", "repeat_penalty")
         self.create_input_row(g_adv, "重复惩罚范围 (--repeat-last-n):", "64", "repeat_last_n")
+        # 🟢 新增：DRY 采样器参数（目前 llama.cpp 效果最佳防复读）
+        self.create_input_row(g_adv, "DRY 倍率 (--dry-multiplier):", "", "dry_multiplier")
+        self.create_input_row(g_adv, "DRY 基数 (--dry-base):", "", "dry_base")
         self.create_input_row(g_adv, "随机种子 (-s, --seed):", "-1", "seed")
 
     def build_right_panel(self):
@@ -335,9 +372,6 @@ class LlamaLauncherApp:
         log_scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=log_scrollbar.set)
-        self.log_text.bind("<MouseWheel>", lambda e: self.log_text.yview_scroll(-1 if e.delta > 0 else 1, "units"))
-        self.log_text.bind("<Button-4>", lambda e: self.log_text.yview_scroll(-1, "units"))
-        self.log_text.bind("<Button-5>", lambda e: self.log_text.yview_scroll(1, "units"))
 
         bottom_frame = ttk.Frame(self.right_frame)
         bottom_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -347,12 +381,12 @@ class LlamaLauncherApp:
         """以内部窗口的形式弹出帮助文档"""
         help_win = tk.Toplevel(self.root)
         help_win.title("llama.cpp 启动器参数详解与帮助")
-        help_win.geometry("650x700")
+        help_win.geometry("700x750")
         help_win.transient(self.root)
         help_win.grab_set()
         
-        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 325
-        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 350
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 350
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 375
         help_win.geometry(f"+{x}+{y}")
 
         txt = tk.Text(help_win, font=("Microsoft YaHei", 10), padx=15, pady=15, wrap=tk.WORD, bg="#f9f9f9")
@@ -362,93 +396,60 @@ class LlamaLauncherApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        help_content = """=== llama.cpp 启动器 使用指南 ===
+        help_content = """=== llama.cpp 启动器 使用指南 (最新版规范) ===
 
 1. 基础设置 (必填)
-这些是启动服务器所需的最核心参数，配置错误将直接导致服务器无法启动。
-
-llama.cpp 所在目录
-说明： 存放 llama.exe、llama-server.exe（Windows）或 llama-server（Linux/Mac）的核心程序文件夹。
-建议： 点击“选择目录...”按钮，直接定位到你的工具包解压路径。
-
-模型路径 (-m)
-说明： 大语言模型文件的绝对路径，文件格式必须为 .gguf。
-建议： 必填项。为了避免路径中含有特殊字符引发报错，建议存放在纯英文路径下。
-
-多模态投影文件 (--mmproj)
-说明： 用于视觉多模态模型（如 LLaVA、Qwen-VL）的视觉投射权重文件。
-建议： 如果你运行的是纯文本模型，请保持为空；如果是多模态（看图说话）模型，则必须配置此项。
-
-监听地址 (--host) 与 监听端口 (--port)
-说明： 服务器绑定的网络 IP 与端口号（默认 127.0.0.1 : 8080）。
+llama.cpp 所在目录： 存放 llama.exe、llama-server.exe 或 llama 核心程序文件夹。
+模型路径 (-m)： 大语言模型文件绝对路径（.gguf 格式）。
+多模态投影文件 (--mmproj)： 视觉模型（LLaVA、Qwen-VL）的投射权重；纯文本模型保持为空。
+模型别名 (-a, --alias)： 映射模型对外名称（如 gpt-4o / default），方便各类 OpenAI API 客户端调用。
+API 密钥 (--api-key)： 设置服务鉴权 Token，防误调或满足客户端鉴权必填项。
+监听地址 (--host) 与 端口 (--port)： 默认 127.0.0.1 : 8080。
 
 2. 模型参数
-负责控制模型加载时的硬件分配与核心计算规模。
-
-上下文长度 (-c, --ctx-size)
-说明： 模型能记住的上下文总长度（包含“你的问题”+“模型的回答”的总 Token 数）。
-建议： 默认 16384。下拉提供 16384~262144 预设，也可手输自定义值；显存充足可设更大。
-
-GPU 加速层数 (-ngl)
-说明： 卸载到显卡（GPU）中计算的模型层数。
-建议： 显存充足建议填 99 或 999（全显存加速）；显存不足时逐步调小。
-
-CPU MoE 专家层数 (-ncmoe, --n-cpu-moe)
-说明： 专门用于 MoE（混合专家模型，如 Qwen-35B-A3B、DeepSeek-V3）的算力分流参数。
-建议： 留空表示不启用。配合 -ngl 999 使用时，将指定层数的稀疏专家权重留在系统内存（RAM）中由 CPU 处理，而将核心注意力层保留在显存中，极大降低显存压力。
-
-批处理大小 (-b) 与 物理批处理大小 (-ub)
-说明： 控制提示词吞吐与硬件批处理大小（默认 -b 2048, -ub 512）。处理超长文档可调大 -ub 提升读取速度。
-
-图像最小Tokens (--image-min-tokens)
-说明： 限制多模态模型单张图片消耗的最小 Token 数，控制视觉请求的显存占用。
-建议： 一般留空即可；视觉请求显存吃紧时可设为 1024 等值限制。
+上下文长度 (-c, --ctx-size)： 模型最大上下文 Token 数（默认 16384）。
+图像 Token 限制 (--image-min-tokens / --image-max-tokens)： 动态分辨率视觉模型单图 Token 上下限。
+GPU 加速层数 (-ngl)： 卸载到 GPU 的层数，显存充裕填 99/999。
+CPU MoE 专家层数 (-ncmoe)： MoE 模型（如 Qwen-35B-A3B）前 N 层专家留由 CPU 运算。
+CPU FFN 稠密层数 (-ncffn)： 稠密模型 FFN 层分流至 CPU 运算。
+全部 MoE 专家放 CPU (-cmoe)： 全局将混合专家权重置于内存。
+批处理大小 (-b / -ub)： -b 为逻辑 Batch，-ub 为物理硬件计算 Batch。
 
 3. 推理/思考模式
-专门针对推理型大模型（如 DeepSeek-R1 等带有思考过程的模型）设计的选项。
-
-推理模式 (--reasoning)：可选 on / off / auto。
-思考力度 (--reasoning-effort)：default / minimal / low / medium / high / xhigh / max。
-思考格式 (--reasoning-format)：auto / none / deepseek / deepseek-legacy。
-思考预算 (--reasoning-budget)：限制单次回复可用的思考 Token 数，-1 表示不限制。留空使用程序默认。
-思考预算耗尽消息 (--reasoning-budget-message)：预算用尽后附加的提示文本，留空不传。
-保留思考内容 (--reasoning-preserve)：勾选后思考内容完整保留在响应中，不勾则折叠。
+推理模式 (--reasoning)： auto / on / off。
+思考力度 (--reasoning-effort)： default / minimal / low / medium / high / xhigh / max。
+思考格式 (--reasoning-format)： auto / none / deepseek / deepseek-legacy。
+思考预算 (--reasoning-budget)： 最大思考 Token 数，-1 为不限制。
+保留思考内容 (--reasoning-preserve)： 勾选后在上下文历史中保留历史轮次的思考痕迹。
 
 4. 性能与内存
-用于极限压榨硬件性能，或在低配设备上通过降低精度挽救显存。
-
-CPU线程数 (-t) 与 批处理线程数 (-tb)
-说明： 分配给模型运算的物理 CPU 核心数量。建议设为电脑 CPU 的“物理核心数”。
-
-Flash Attention (-fa)
-说明： 闪烁注意力机制。默认 auto，强烈建议开启，大幅降低显存并提速。
-
-KV Cache 类型 K (-ctk) 与 类型 V (-ctv)
-说明： 上下文缓存量化数据类型，可选 f32 / f16 / bf16 / q8_0 / q4_0 / q4_1 / q5_0 / q5_1 / iq4_nl。默认 f16，显存紧张时设为 q8_0 或更低精度释放巨量显存。
-
-KV 缓存优化/卸载 (-kvo)
-说明： 针对长上下文的 KV 缓存调度与卸载优化。
-建议： 勾选开启。在跑 32K ~ 256K 超大上下文时，协助动态优化与调度 KV 缓存，防止显存瞬时溢出。
-
-加载模式 (-lm, --load-mode)
-说明： 新版统一加载模式，已取代废弃的 --no-mmap / --mlock / --direct-io。可选值：auto（默认，自动选择）、none（普通读入，占用更多 RAM）、mmap（内存映射）、mlock（锁定物理 RAM 防止交换，不映射文件）、mmap+mlock（映射并锁定）、dio（DirectIO 直读，适合 NVMe 固态）。
-建议： 一般留空即可；希望模型常驻内存、避免推理卡顿可选 mlock 或 mmap+mlock（Windows 下需要足够的进程工作集配额）。
-
-缓存 RAM 限制 (--cache-ram)
-说明： 限制 KV/计算缓存可用的主机内存大小（MiB）。留空使用程序默认。
-
-上下文检查点 (--ctx-checkpoints)
-说明： 长上下文场景下 KV 检查点的数量，用于回退与恢复。新版默认为 32，留空即用程序默认；显存紧张可调小（如 8）。
+计算设备 (-dev, --device)： 显式指定计算后端或显卡（如 CUDA0 / Vulkan0 / 0），防止双显卡跑错至核显。
+CPU 线程数 (-t / -tb)： 生成线程与 Batch 提示词处理线程数。
+Flash Attention (-fa)： 闪烁注意力（推荐 auto / on），大幅降低显存并提速。
+KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16，显存吃紧建议 q8_0 或 q4_0）。
+优化/卸载 KV 缓存 (-kvo)： 默认开启；取消勾选将显式传 --no-kv-offload 禁用卸载。
+缓存块重用 (--cache-reuse)： 设置 KV 缓存块重用阈值（建议 256 或 512），大幅降低多轮长对话与 RAG 的首字延迟。
+加载模式 (-lm, --load-mode)： auto / none / mmap / mlock / mmap+mlock / dio。
+大张量按需读取 (--tensor-read-lazy)： on / auto / off，超大嵌入模型在 mmap 下大幅降低 RAM 占用。
+上下文检查点 (--ctx-checkpoints)： 长上下文回退与分支检查点数（默认 32）。
 
 5. 请求控制与模板
-并发槽位数 (-np)：单机填 1。
-使用 Jinja 模板 (--jinja)：新版已默认启用，勾选时不传参；取消勾选将传 --no-jinja 关闭模板引擎。
-启用向量嵌入 (--embedding) / 重排序 (--reranking)：外接专属知识库模型时勾选。
+并发槽位数 (-np)： 并发处理槽位数（单用户推荐 1）。
+使用 Jinja 模板 (--jinja)： 默认开启；取消勾选将传 --no-jinja。
+指定模板名称 (--chat-template)： 强制指定内置模板（如 qwen2, deepseek3, chatml 等）。
 
-5b. 投机解码
-投机解码可在不损失输出的前提下大幅提升生成速度。支持逗号分隔多类型组合（如 draft-mtp,ngram-mod），可在下拉框中手输。
-* 草稿模型类：draft-simple / draft-eagle3 / draft-mtp / draft-dflash / draft-dspark（配合草稿模型或自带 MTP 头使用）。
-* n-gram 类：ngram-mod（无需额外模型，纯 CPU 零开销加速）、ngram-cache、ngram-simple、ngram-map-k、ngram-map-k4v（实验性）。
+5b. 投机解码 (Speculative Decoding)
+投机解码类型 (--spec-type)：
+  - draft-mtp: 多 Token 预测（如 Ornith/DeepSeek），使用模型内置头，无需外挂草稿文件。
+  - draft-simple / draft-eagle3 / draft-dflash: 外挂轻量小草稿模型 (--model-draft)。
+  - ngram-mod / ngram-simple: 纯 CPU 零显存开销的 N-gram 自推测加速。
+草稿最小概率 (--spec-draft-p-min)： 【极关键】投机置信度门限（建议 0.75~0.80），低于此概率提前退出，避免无效草稿拖慢速度。
+草稿 Tokens 范围 (--spec-draft-n-max / --spec-draft-n-min)： 单步投机最大/最小生成数量。
+
+6. 采样与高级采样
+温度 (--temp) / Top-P / Top-K / Min-P： 标准核采样与最小概率门限。
+存在惩罚 (--presence-penalty) / 频率惩罚 (--frequency-penalty)： 重复抑制。
+DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读算法（优于传统 repeat-penalty）。
 """
         txt.insert(tk.END, help_content)
         txt.config(state=tk.DISABLED)
@@ -514,7 +515,8 @@ KV 缓存优化/卸载 (-kvo)
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     config_data = json.load(f)
-                # 🟢 新版迁移：旧配置的 no_mmap/mlock 布尔开关 -> load_mode
+                
+                # 兼容旧版配置迁移：no_mmap/mlock 布尔开关 -> load_mode
                 if "load_mode" in self.vars:
                     _valid_lm = ("auto", "none", "mmap", "mlock", "mmap+mlock", "dio")
                     _lm = str(config_data.get("load_mode", "")).strip()
@@ -527,11 +529,11 @@ KV 缓存优化/卸载 (-kvo)
                         if _had_old:
                             _mlock = _as_bool(config_data.get("mlock", False))
                             _no_mmap = _as_bool(config_data.get("no_mmap", False))
-                            # 对应关系：--no-mmap --mlock 组合与单独 --mlock 均 -> mlock
                             if _mlock:
                                 self.vars["load_mode"].set("mlock")
                             elif _no_mmap:
                                 self.vars["load_mode"].set("none")
+
                 for k, v in config_data.items():
                     if k == "load_mode":
                         continue
@@ -543,8 +545,8 @@ KV 缓存优化/卸载 (-kvo)
                             else:
                                 var.set(str(v).strip().lower() in ("1", "true", "yes", "on"))
                         else:
-                            if k == "reasoning" and v == "":
-                                v = "off"
+                            if k == "reasoning" and v not in ["auto", "on", "off"]:
+                                v = "auto"
                             if k == "reasoning_format" and v not in ["auto", "none", "deepseek", "deepseek-legacy"]:
                                 v = "auto"
                             if k in ("ctk", "ctv") and v == "":
@@ -597,25 +599,32 @@ KV 缓存优化/卸载 (-kvo)
         mappings = [
             ("model", "-m", False),
             ("mmproj", "--mmproj", False),
+            ("alias", "--alias", False),
+            ("api_key", "--api-key", False),
             ("image_min_tokens", "--image-min-tokens", False),
+            ("image_max_tokens", "--image-max-tokens", False),
             ("host", "--host", False),
             ("port", "--port", False),
+            ("device", "-dev", False),
             ("ctx", "-c", False),
             ("threads", "-t", False), 
             ("threads_batch", "-tb", False), 
             ("fa", "-fa", False),
             ("ctk", "-ctk", False),
             ("ctv", "-ctv", False),
-            ("kvo", "-kvo", True),                 # 🟢 支持 -kvo 开关
             ("ngl", "-ngl", False),
-            ("ncmoe", "-ncmoe", False),             # 🟢 支持 -ncmoe 专家层数
+            ("cmoe", "-cmoe", True),
+            ("ncmoe", "-ncmoe", False),
+            ("ncffn", "-ncffn", False),
             ("b", "-b", False),
             ("ub", "-ub", False),
             ("np", "-np", False),
             ("keep", "--keep", False),
             ("embedding", "--embedding", True),
             ("reranking", "--reranking", True),
-            ("load_mode", "--load-mode", False),   # 取代已废弃的 --no-mmap / --mlock
+            ("cache_reuse", "--cache-reuse", False),
+            ("load_mode", "--load-mode", False),
+            ("tensor_read_lazy", "--tensor-read-lazy", False),
             ("cache_ram", "--cache-ram", False),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
             ("reasoning", "--reasoning", False),
@@ -630,24 +639,37 @@ KV 缓存优化/卸载 (-kvo)
             ("top_k", "--top-k", False),
             ("min_p", "--min-p", False),
             ("presence_penalty", "--presence-penalty", False),
+            ("frequency_penalty", "--frequency-penalty", False),
             ("repeat_penalty", "--repeat-penalty", False),
             ("repeat_last_n", "--repeat-last-n", False),
+            ("dry_multiplier", "--dry-multiplier", False),
+            ("dry_base", "--dry-base", False),
             ("seed", "-s", False),
+            ("chat_template", "--chat-template", False),
             ("kwargs", "--chat-template-kwargs", False),
             ("spec_type", "--spec-type", False),
             ("draft_model", "--model-draft", False),
             ("draft_max", "--spec-draft-n-max", False),
-            ("draft_min", "--spec-draft-n-min", False)
+            ("draft_min", "--spec-draft-n-min", False),
+            ("draft_p_min", "--spec-draft-p-min", False),
+            ("draft_ctk", "--spec-draft-type-k", False),
+            ("draft_ctv", "--spec-draft-type-v", False),
         ]
 
-        # 投机解码：仅 draft-* 需要 draft 相关参数
-        _is_draft = self.vars["spec_type"].get().strip().startswith("draft")
+        # 投机解码类型判断
+        _spec = self.vars.get("spec_type", tk.StringVar()).get().strip()
+        _is_ext_draft = bool(_spec) and ("draft" in _spec) and (_spec != "draft-mtp")
+        _is_spec = bool(_spec)
 
         for var_key, flag, is_boolean in mappings:
             if var_key not in self.vars: continue
-            # 非 draft 模式下忽略草稿参数，避免无效命令行
-            if var_key in ("draft_model", "draft_max", "draft_min") and not _is_draft:
+            
+            # 投机解码参数智能过滤：非外挂草稿模型不传 --model-draft / 草稿KV类型
+            if var_key in ("draft_model", "draft_ctk", "draft_ctv") and not _is_ext_draft:
                 continue
+            if var_key in ("draft_max", "draft_min", "draft_p_min") and not _is_spec:
+                continue
+
             val = self.vars[var_key].get()
             if is_boolean:
                 if val:  
@@ -656,10 +678,17 @@ KV 缓存优化/卸载 (-kvo)
                 if not isinstance(val, str): continue
                 val = val.strip()
                 if not val: continue
+                # reasoning_effort 为 default 时不显式传参
+                if var_key == "reasoning_effort" and val == "default":
+                    continue
                 cmd.extend([flag, val])
 
-        # Jinja：新版 llama-server 已默认启用 --jinja；仅取消勾选时显式传 --no-jinja
-        if not self.vars["jinja"].get():
+        # 🟢 KV 缓存优化：默认启用，取消勾选时显式传 --no-kv-offload
+        if "kvo" in self.vars and not self.vars["kvo"].get():
+            cmd.append("--no-kv-offload")
+
+        # 🟢 Jinja 模板：默认启用，取消勾选时显式传 --no-jinja
+        if "jinja" in self.vars and not self.vars["jinja"].get():
             cmd.append("--no-jinja")
 
         return cmd
@@ -667,7 +696,7 @@ KV 缓存优化/卸载 (-kvo)
     def export_script(self):
         cmd_list = self.build_command()
         
-        # BAT 特殊字符：出现任一则必须加引号
+        # BAT 特殊字符处理
         _bat_special = set(' &|<>()^!;=,')
         safe_cmd = []
         for item in cmd_list:
@@ -681,15 +710,26 @@ KV 缓存优化/卸载 (-kvo)
         script_content = "@echo off\nchcp 65001 > nul\ntitle Llama Server 独立脚本\n\n"
         script_content += " ".join(safe_cmd) + "\n\npause"
         
-        try:
-            base_name = os.path.splitext(os.path.basename(self.current_config_file))[0]
-            bat_name = f"start_server_{base_name}.bat"
-            
-            with open(bat_name, "w", encoding="utf-8-sig") as f:
-                f.write(script_content)
-            messagebox.showinfo("成功", f"已在当前目录生成独立启动脚本：\n{bat_name}")
-        except Exception as e:
-            messagebox.showerror("失败", f"生成脚本失败:\n{str(e)}")
+        base_name = os.path.splitext(os.path.basename(self.current_config_file))[0] if self.current_config_file else "server"
+        default_bat_name = f"start_server_{base_name}.bat"
+        initial_dir = os.path.dirname(os.path.abspath(self.current_config_file)) if self.current_config_file else "."
+
+        filepath = filedialog.asksaveasfilename(
+            title="导出独立 BAT 脚本",
+            initialdir=initial_dir,
+            initialfile=default_bat_name,
+            defaultextension=".bat",
+            filetypes=[("BAT 批处理脚本", "*.bat"), ("所有文件", "*.*")]
+        )
+        
+        if filepath:
+            try:
+                with open(filepath, "w", encoding="utf-8-sig") as f:
+                    f.write(script_content)
+                messagebox.showinfo("成功", f"已成功导出启动脚本：\n{os.path.basename(filepath)}")
+                self.append_log(f"[系统] 已生成独立启动脚本: {filepath}\n")
+            except Exception as e:
+                messagebox.showerror("失败", f"生成脚本失败:\n{str(e)}")
 
     def _current_host_port(self):
         host = self.vars.get("host").get().strip() or "127.0.0.1"
@@ -728,8 +768,12 @@ KV 缓存优化/卸载 (-kvo)
             ).stdout
             for line in out.splitlines():
                 parts = line.split()
-                if len(parts) >= 5 and parts[0] == "TCP" and parts[1].endswith(f":{port}") and parts[3] == "LISTENING":
-                    return int(parts[4])
+                if len(parts) >= 5 and parts[0] == "TCP" and parts[3] == "LISTENING":
+                    local_addr = parts[1]
+                    if ":" in local_addr:
+                        actual_port = local_addr.rsplit(":", 1)[1]
+                        if actual_port == str(port):
+                            return int(parts[4])
         except Exception:
             pass
         return None
@@ -738,16 +782,16 @@ KV 缓存优化/卸载 (-kvo)
         host, port = self._current_host_port()
         pid = self._find_pid_on_port(host, port)
         if pid:
-            if not messagebox.askyesno("确认", f"检测到端口 {port} 被 PID {pid} 占用。\n确定要终止该进程吗？"):
+            if not messagebox.askyesno("确认", f"检测到端口 {port} 被 PID {pid} 占用。\n确定要终止该进程及子进程吗？"):
                 return
             try:
                 kill = subprocess.run(
-                    ["taskkill", "/F", "/PID", str(pid)],
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
                     capture_output=True, text=True,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 )
                 if kill.returncode == 0:
-                    self.append_log(f"[系统] 已终止外部服务器进程 (PID {pid})。\n")
+                    self.append_log(f"[系统] 已终止外部服务器进程 (PID {pid}) 及其进程树。\n")
                 else:
                     self.append_log(f"[错误] 终止进程 (PID {pid}) 失败: {kill.stderr.strip() or '返回码 ' + str(kill.returncode)}\n")
             except Exception as e:
@@ -770,7 +814,11 @@ KV 缓存优化/卸载 (-kvo)
             if not messagebox.askyesno("确认退出", "服务器仍在运行，关闭窗口将终止服务器。\n确定要退出吗？"):
                 return
             try:
-                self._current_proc.terminate()
+                if os.name == 'nt' and self._current_proc.pid:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(self._current_proc.pid)],
+                                   capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                else:
+                    self._current_proc.terminate()
             except Exception:
                 pass
         elif self._external_running:
@@ -787,7 +835,14 @@ KV 缓存优化/卸载 (-kvo)
             return
         if self._running:
             if self._current_proc and self._current_proc.poll() is None:
-                self._current_proc.terminate()
+                try:
+                    if os.name == 'nt' and self._current_proc.pid:
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(self._current_proc.pid)],
+                                       capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    else:
+                        self._current_proc.terminate()
+                except Exception:
+                    pass
             self._running = False
             self.append_log("\n[系统] 正在终止服务器进程...")
             try:
@@ -868,6 +923,10 @@ KV 缓存优化/卸载 (-kvo)
 
     def append_log(self, text):
         try:
+            # 限制最大行数（超过 10000 行自动清理前 2000 行，防止极端长日志导致 UI 卡顿）
+            line_count = int(self.log_text.index('end-1c').split('.')[0])
+            if line_count > 10000:
+                self.log_text.delete("1.0", "2000.0")
             self.log_text.insert(tk.END, text)
             self.log_text.see(tk.END)
         except tk.TclError:
