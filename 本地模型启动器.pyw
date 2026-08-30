@@ -196,6 +196,8 @@ class LlamaLauncherApp:
         self.create_file_row(g_basic, "多模态投影文件 (--mmproj):", "", "mmproj",
                              filetypes=[("GGUF Projector", "*.gguf"), ("All files", "*.*")],
                              initial_var_key="model")
+        # 🟢 新增：视觉多模态模型交由 CPU 处理，节省 ~1GB 显存
+        self.create_check_row(g_basic, "视觉模型交由CPU处理 (--no-mmproj-offload)", False, "no_mmproj_offload")
         # 🟢 新增：模型别名与 API Key（适配各大客户端/OpenAI API）
         self.create_input_row(g_basic, "模型别名 (-a, --alias):", "", "alias")
         self.create_input_row(g_basic, "API 密钥 (--api-key):", "", "api_key")
@@ -210,10 +212,8 @@ class LlamaLauncherApp:
         # 🟢 新增：图像最大Tokens限制
         self.create_input_row(g_model, "图像最大Tokens (--image-max-tokens):", "", "image_max_tokens")
         self.create_input_row(g_model, "GPU加速层数 (-ngl):", "", "ngl")
-        # 🟢 MoE 与 FFN 专家分流
+        # 🟢 MoE 专家分流 (MoE模型如 35B / DeepSeek 显存吃紧时分流部分专家到 CPU)
         self.create_input_row(g_model, "CPU MoE专家层数 (-ncmoe):", "", "ncmoe")
-        self.create_input_row(g_model, "CPU FFN稠密层数 (-ncffn):", "", "ncffn")
-        self.create_check_row(g_model, "全部MoE专家放CPU (-cmoe)", False, "cmoe")
         self.create_input_row(g_model, "批处理大小 (-b):", "2048", "b")
         self.create_input_row(g_model, "物理批处理大小 (-ub):", "512", "ub")
 
@@ -224,7 +224,6 @@ class LlamaLauncherApp:
         self.create_combo_row(g_reason, "思考力度 (--reasoning-effort):", ["default", "minimal", "low", "medium", "high", "xhigh", "max"], "default", "reasoning_effort", readonly=True)
         self.create_input_row(g_reason, "思考预算 (--reasoning-budget):", "", "reasoning_budget")
         self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["auto", "none", "deepseek", "deepseek-legacy"], "auto", "reasoning_format", readonly=True)
-        self.create_input_row(g_reason, "思考预算耗尽消息:", "", "reasoning_exhausted")
         self.create_check_row(g_reason, "保留思考内容 (--reasoning-preserve)", False, "reasoning_preserve")
 
         # --- 4. 性能与内存 ---
@@ -235,10 +234,12 @@ class LlamaLauncherApp:
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
         self.create_combo_row(g_perf, "Flash Attention (-fa):", ["auto", "on", "off"], "auto", "fa", readonly=True)
-        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctk", readonly=True)
-        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctv", readonly=True)
+        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "turbo4", "turbo3", "turbo2", "turbo8"], "f16", "ctk", readonly=False)
+        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "turbo4", "turbo3", "turbo2", "turbo8"], "f16", "ctv", readonly=False)
         # 🟢 KV 缓存优化开关 (默认开启；取消勾选将传 --no-kv-offload)
         self.create_check_row(g_perf, "优化/卸载KV缓存 (-kvo)", True, "kvo")
+        # 🟢 新增：统一 KV 缓存池
+        self.create_check_row(g_perf, "统一KV缓存池 (--kv-unified)", False, "kv_unified")
         # 🟢 新增：缓存块重用 (多轮长对话/RAG首字加速，建议 256 或 512)
         self.create_input_row(g_perf, "缓存块重用 (--cache-reuse):", "", "cache_reuse")
         # 🟢 新版 llama.cpp：统一为 --load-mode
@@ -246,16 +247,20 @@ class LlamaLauncherApp:
         # 🟢 新增：大张量按需读取 (节省大模型物理 RAM)
         self.create_combo_row(g_perf, "大张量按需读取 (--tensor-read-lazy):", ["", "auto", "on", "off"], "", "tensor_read_lazy", readonly=True)
         self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "", "cache_ram")
+        # 🟢 新增：不保留主机 RAM 模型副本
+        self.create_check_row(g_perf, "不保留主机RAM副本 (--no-host)", False, "no_host")
         self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "", "ctx_checkpoints")
 
         # --- 5. 请求控制与模板 ---
         g_req = ttk.LabelFrame(self.left_frame, text="请求控制与模板")
         g_req.pack(fill=tk.X, padx=5, pady=5)
         self.create_input_row(g_req, "并发槽位数 (-np, --parallel):", "1", "np")
-        self.create_input_row(g_req, "保留初始Tokens (--keep):", "0", "keep")
         self.create_check_row(g_req, "启用向量嵌入 (--embedding)", False, "embedding")
         self.create_check_row(g_req, "启用重排序 (--reranking)", False, "reranking")
         self.create_check_row(g_req, "使用 Jinja 模板 (--jinja)", True, "jinja")
+        # 🟢 新增：外部 Jinja 模板文件路径
+        self.create_file_row(g_req, "外部模板文件 (--chat-template-file):", "", "chat_template_file",
+                             filetypes=[("Jinja Template", "*.jinja;*.jinja2;*.j2"), ("All files", "*.*")])
         self.create_input_row(g_req, "指定模板名称 (--chat-template):", "", "chat_template")
         self.create_input_row(g_req, "模板附加参数 (--chat-template-kwargs):", "", "kwargs")
 
@@ -270,8 +275,8 @@ class LlamaLauncherApp:
         entry_draft_min = self.create_input_row(g_spec, "草稿最小Tokens (--spec-draft-n-min):", "", "draft_min")
         # 🟢 新增：极关键的投机解码置信度门限（防止吞吐雪崩）及草稿KV缓存类型
         entry_draft_p_min = self.create_input_row(g_spec, "草稿最小概率 (--spec-draft-p-min):", "", "draft_p_min")
-        combo_draft_ctk = self.create_combo_row(g_spec, "草稿K缓存类型 (-ctkd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctk", readonly=True)
-        combo_draft_ctv = self.create_combo_row(g_spec, "草稿V缓存类型 (-ctvd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctv", readonly=True)
+        combo_draft_ctk = self.create_combo_row(g_spec, "草稿K缓存类型 (-ctkd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl", "turbo4", "turbo3", "turbo2", "turbo8"], "", "draft_ctk", readonly=False)
+        combo_draft_ctv = self.create_combo_row(g_spec, "草稿V缓存类型 (-ctvd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl", "turbo4", "turbo3", "turbo2", "turbo8"], "", "draft_ctv", readonly=False)
 
         # 智能控件联动：区分外挂草稿模型类 vs 内置MTP vs N-gram
         self._ext_draft_entries = [entry_draft_model, combo_draft_ctk, combo_draft_ctv]
@@ -402,6 +407,7 @@ class LlamaLauncherApp:
 llama.cpp 所在目录： 存放 llama.exe、llama-server.exe 或 llama 核心程序文件夹。
 模型路径 (-m)： 大语言模型文件绝对路径（.gguf 格式）。
 多模态投影文件 (--mmproj)： 视觉模型（LLaVA、Qwen-VL）的投射权重；纯文本模型保持为空。
+视觉模型交CPU处理 (--no-mmproj-offload)： 勾选后将视觉投影模型交由 CPU 运算，节省 ~1.0-1.5GB 显存。
 模型别名 (-a, --alias)： 映射模型对外名称（如 gpt-4o / default），方便各类 OpenAI API 客户端调用。
 API 密钥 (--api-key)： 设置服务鉴权 Token，防误调或满足客户端鉴权必填项。
 监听地址 (--host) 与 端口 (--port)： 默认 127.0.0.1 : 8080。
@@ -411,8 +417,6 @@ API 密钥 (--api-key)： 设置服务鉴权 Token，防误调或满足客户端
 图像 Token 限制 (--image-min-tokens / --image-max-tokens)： 动态分辨率视觉模型单图 Token 上下限。
 GPU 加速层数 (-ngl)： 卸载到 GPU 的层数，显存充裕填 99/999。
 CPU MoE 专家层数 (-ncmoe)： MoE 模型（如 Qwen-35B-A3B）前 N 层专家留由 CPU 运算。
-CPU FFN 稠密层数 (-ncffn)： 稠密模型 FFN 层分流至 CPU 运算。
-全部 MoE 专家放 CPU (-cmoe)： 全局将混合专家权重置于内存。
 批处理大小 (-b / -ub)： -b 为逻辑 Batch，-ub 为物理硬件计算 Batch。
 
 3. 推理/思考模式
@@ -426,16 +430,20 @@ CPU FFN 稠密层数 (-ncffn)： 稠密模型 FFN 层分流至 CPU 运算。
 计算设备 (-dev, --device)： 显式指定计算后端或显卡（如 CUDA0 / Vulkan0 / 0），防止双显卡跑错至核显。
 CPU 线程数 (-t / -tb)： 生成线程与 Batch 提示词处理线程数。
 Flash Attention (-fa)： 闪烁注意力（推荐 auto / on），大幅降低显存并提速。
-KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16，显存吃紧建议 q8_0 或 q4_0）。
+KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0 及 turbo4/turbo3/turbo2 极致压缩）。
 优化/卸载 KV 缓存 (-kvo)： 默认开启；取消勾选将显式传 --no-kv-offload 禁用卸载。
+统一 KV 缓存池 (--kv-unified)： 勾选后统筹管理 K/V 缓存池，提升长上下文利用率。
 缓存块重用 (--cache-reuse)： 设置 KV 缓存块重用阈值（建议 256 或 512），大幅降低多轮长对话与 RAG 的首字延迟。
 加载模式 (-lm, --load-mode)： auto / none / mmap / mlock / mmap+mlock / dio。
 大张量按需读取 (--tensor-read-lazy)： on / auto / off，超大嵌入模型在 mmap 下大幅降低 RAM 占用。
+缓存 RAM 限制 (--cache-ram)： 限制主机缓存 RAM（设为 0 可关闭内存缓存）。
+不保留主机 RAM 副本 (--no-host)： 配合 --cache-ram 0 彻底杜绝主机内存冗余副本。
 上下文检查点 (--ctx-checkpoints)： 长上下文回退与分支检查点数（默认 32）。
 
 5. 请求控制与模板
 并发槽位数 (-np)： 并发处理槽位数（单用户推荐 1）。
 使用 Jinja 模板 (--jinja)： 默认开启；取消勾选将传 --no-jinja。
+外部模板文件 (--chat-template-file)： 指定自定义外部 Jinja 模板文件（如 deepseek 格式模板）。
 指定模板名称 (--chat-template)： 强制指定内置模板（如 qwen2, deepseek3, chatml 等）。
 
 5b. 投机解码 (Speculative Decoding)
@@ -599,6 +607,7 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
         mappings = [
             ("model", "-m", False),
             ("mmproj", "--mmproj", False),
+            ("no_mmproj_offload", "--no-mmproj-offload", True),
             ("alias", "--alias", False),
             ("api_key", "--api-key", False),
             ("image_min_tokens", "--image-min-tokens", False),
@@ -613,26 +622,24 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             ("ctk", "-ctk", False),
             ("ctv", "-ctv", False),
             ("ngl", "-ngl", False),
-            ("cmoe", "-cmoe", True),
             ("ncmoe", "-ncmoe", False),
-            ("ncffn", "-ncffn", False),
             ("b", "-b", False),
             ("ub", "-ub", False),
             ("np", "-np", False),
-            ("keep", "--keep", False),
             ("embedding", "--embedding", True),
             ("reranking", "--reranking", True),
+            ("kv_unified", "--kv-unified", True),
             ("cache_reuse", "--cache-reuse", False),
             ("load_mode", "--load-mode", False),
             ("tensor_read_lazy", "--tensor-read-lazy", False),
             ("cache_ram", "--cache-ram", False),
+            ("no_host", "--no-host", True),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
             ("reasoning", "--reasoning", False),
             ("reasoning_effort", "--reasoning-effort", False),
             ("reasoning_budget", "--reasoning-budget", False),
             ("reasoning_format", "--reasoning-format", False),
             ("reasoning_preserve", "--reasoning-preserve", True),
-            ("reasoning_exhausted", "--reasoning-budget-message", False),
             ("n_predict", "-n", False),
             ("temp", "--temp", False),
             ("top_p", "--top-p", False),
@@ -645,6 +652,7 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             ("dry_multiplier", "--dry-multiplier", False),
             ("dry_base", "--dry-base", False),
             ("seed", "-s", False),
+            ("chat_template_file", "--chat-template-file", False),
             ("chat_template", "--chat-template", False),
             ("kwargs", "--chat-template-kwargs", False),
             ("spec_type", "--spec-type", False),
@@ -660,10 +668,17 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
         _spec = self.vars.get("spec_type", tk.StringVar()).get().strip()
         _is_ext_draft = bool(_spec) and ("draft" in _spec) and (_spec != "draft-mtp")
         _is_spec = bool(_spec)
+        _has_mmproj = bool(self.vars.get("mmproj", tk.StringVar()).get().strip())
 
         for var_key, flag, is_boolean in mappings:
             if var_key not in self.vars: continue
             
+            # 视觉 CPU 卸载过滤：未选择多模态文件时不传
+            if var_key == "no_mmproj_offload" and not _has_mmproj:
+                continue
+            # 模板互斥过滤：指定外部模板文件时，不传内置模板名称 --chat-template
+            if var_key == "chat_template" and self.vars.get("chat_template_file", tk.StringVar()).get().strip():
+                continue
             # 投机解码参数智能过滤：非外挂草稿模型不传 --model-draft / 草稿KV类型
             if var_key in ("draft_model", "draft_ctk", "draft_ctv") and not _is_ext_draft:
                 continue
@@ -687,9 +702,12 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
         if "kvo" in self.vars and not self.vars["kvo"].get():
             cmd.append("--no-kv-offload")
 
-        # 🟢 Jinja 模板：默认启用，取消勾选时显式传 --no-jinja
-        if "jinja" in self.vars and not self.vars["jinja"].get():
-            cmd.append("--no-jinja")
+        # 🟢 Jinja 模板：显式传参以确保跨 llama.cpp 版本兼容
+        if "jinja" in self.vars:
+            if self.vars["jinja"].get():
+                cmd.append("--jinja")
+            else:
+                cmd.append("--no-jinja")
 
         return cmd
 
