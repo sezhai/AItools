@@ -6,6 +6,30 @@ import os
 import json
 import webbrowser
 import socket
+import ctypes
+
+# Windows Ctypes 结构体定义 (用于高性能系统监控)
+class _FILETIME(ctypes.Structure):
+    _fields_ = [('dwLowDateTime', ctypes.c_ulong), ('dwHighDateTime', ctypes.c_ulong)]
+
+class _MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [
+        ('dwLength', ctypes.c_ulong),
+        ('dwMemoryLoad', ctypes.c_ulong),
+        ('ullTotalPhys', ctypes.c_ulonglong),
+        ('ullAvailPhys', ctypes.c_ulonglong),
+        ('ullTotalPageFile', ctypes.c_ulonglong),
+        ('ullAvailPageFile', ctypes.c_ulonglong),
+        ('ullTotalVirtual', ctypes.c_ulonglong),
+        ('ullAvailVirtual', ctypes.c_ulonglong),
+        ('ullAvailExtendedVirtual', ctypes.c_ulonglong),
+    ]
+
+class _NVMLMemory(ctypes.Structure):
+    _fields_ = [('total', ctypes.c_ulonglong), ('free', ctypes.c_ulonglong), ('used', ctypes.c_ulonglong)]
+
+class _NVMLUtilization(ctypes.Structure):
+    _fields_ = [('gpu', ctypes.c_uint), ('memory', ctypes.c_uint)]
 
 class LlamaLauncherApp:
     def __init__(self, root):
@@ -24,11 +48,15 @@ class LlamaLauncherApp:
         self._running = False
         self._current_proc = None
         self._external_running = False
+        self._is_destroyed = False
         self.vars = {} # 统一管理所有输入变量
         
         # 默认配置文件名
         self.current_config_file = "llama_config.json"
         
+        # 初始化系统监控探针 (CPU / 内存 / GPU)
+        self._init_sys_monitor()
+
         self.setup_ui()
         # 窗口关闭协议：防止孤儿进程
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -36,6 +64,8 @@ class LlamaLauncherApp:
         self.load_settings()
         # 异步探测端口上是否已有服务器在运行（避免阻塞窗口显示）
         self.root.after(300, self.check_existing_server)
+        # 启动系统资源循环刷新
+        self.root.after(200, self._update_sys_stats)
 
     def setup_ui(self):
         # ====== 核心修复：禁用 Combobox 的默认滚轮事件，防止误触 ======
@@ -229,8 +259,11 @@ class LlamaLauncherApp:
         # --- 4. 性能与内存 ---
         g_perf = ttk.LabelFrame(self.left_frame, text="性能与内存")
         g_perf.pack(fill=tk.X, padx=5, pady=5)
-        # 🟢 新增：计算设备指定 (多卡/核显防跑偏，如 CUDA0, 0, Vulkan0)
+        # 🟢 新增：计算设备与多卡参数
         self.create_input_row(g_perf, "计算设备 (-dev, --device):", "", "device")
+        self.create_combo_row(g_perf, "多卡切分模式 (-sm, --split-mode):", ["", "layer", "row", "none"], "", "split_mode", readonly=True)
+        self.create_input_row(g_perf, "多卡显存比例 (-ts, --tensor-split):", "", "tensor_split")
+        self.create_input_row(g_perf, "主GPU索引 (-mg, --main-gpu):", "", "main_gpu")
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
         self.create_combo_row(g_perf, "Flash Attention (-fa):", ["auto", "on", "off"], "auto", "fa", readonly=True)
@@ -345,31 +378,70 @@ class LlamaLauncherApp:
 
         ttk.Button(top_frame, text="📂 加载配置", command=self.load_config_dialog).pack(side=tk.LEFT, padx=2)
         ttk.Button(top_frame, text="💾 保存配置", command=self.save_settings).pack(side=tk.LEFT, padx=2)
-        ttk.Button(top_frame, text="📜 导出BAT脚本", command=self.export_script).pack(side=tk.LEFT, padx=2)
-        ttk.Button(top_frame, text="🌐 打开WebUI", command=self.open_webui).pack(side=tk.LEFT, padx=2)
-        ttk.Button(top_frame, text="❓ 帮助", command=self.open_help_doc).pack(side=tk.LEFT, padx=2)
+        ttk.Button(top_frame, text="📜 导出批处理脚本", command=self.export_script).pack(side=tk.LEFT, padx=2)
+        ttk.Button(top_frame, text="🌐 打开控制台", command=self.open_webui).pack(side=tk.LEFT, padx=2)
+        ttk.Button(top_frame, text="❓ 帮助指南", command=self.open_help_doc).pack(side=tk.LEFT, padx=2)
 
         status_header_frame = ttk.Frame(self.right_frame)
-        status_header_frame.pack(fill=tk.X, padx=5, pady=(10, 0))
+        status_header_frame.pack(fill=tk.X, padx=5, pady=(8, 0))
         
         ttk.Label(status_header_frame, text="服务器状态").pack(side=tk.LEFT)
         self.lbl_config = ttk.Label(status_header_frame, text=f"当前配置: {os.path.basename(self.current_config_file)}", foreground="blue")
         self.lbl_config.pack(side=tk.RIGHT)
 
-        self.lbl_status = tk.Label(self.right_frame, text="未运行", fg="red", font=("Microsoft YaHei", 10, "bold"))
-        self.lbl_status.pack(anchor=tk.W, padx=5, pady=(0, 5))
+        status_info_frame = ttk.Frame(self.right_frame)
+        status_info_frame.pack(fill=tk.X, padx=5, pady=(1, 3))
+        self.lbl_status = tk.Label(status_info_frame, text="未运行", fg="red", font=("Microsoft YaHei", 10, "bold"))
+        self.lbl_status.pack(side=tk.LEFT)
+        self.lbl_run_status = ttk.Label(status_info_frame, text="运行状态: 否")
+        self.lbl_run_status.pack(side=tk.LEFT, padx=(15, 0))
+        self.lbl_pid = ttk.Label(status_info_frame, text="进程号 (PID): -")
+        self.lbl_pid.pack(side=tk.LEFT, padx=(15, 0))
         
         ttk.Separator(self.right_frame, orient='horizontal').pack(fill=tk.X, padx=5, pady=2)
 
-        ttk.Label(self.right_frame, text="进程信息").pack(anchor=tk.W, padx=5, pady=(5, 0))
-        self.lbl_run_status = ttk.Label(self.right_frame, text="运行状态: 否")
-        self.lbl_run_status.pack(anchor=tk.W, padx=5, pady=2)
-        self.lbl_pid = ttk.Label(self.right_frame, text="PID: -")
-        self.lbl_pid.pack(anchor=tk.W, padx=5, pady=(0, 5))
-        
+        # ====== 系统硬件资源监控区 ======
+        sys_frame = ttk.LabelFrame(self.right_frame, text="系统监控")
+        sys_frame.pack(fill=tk.X, padx=5, pady=(1, 3))
+
+        sys_frame.columnconfigure(0, weight=0, minsize=235)
+        sys_frame.columnconfigure(1, weight=0)
+        sys_frame.columnconfigure(2, weight=1)
+
+        # 第0行：CPU 与 内存 (严格分列对齐)
+        self.lbl_cpu = ttk.Label(sys_frame, text="CPU: 计算中...", font=("Microsoft YaHei", 9))
+        self.lbl_cpu.grid(row=0, column=0, padx=(8, 4), pady=2, sticky="w")
+
+        sep0 = ttk.Label(sys_frame, text="│", foreground="#888888", font=("Microsoft YaHei", 9))
+        sep0.grid(row=0, column=1, padx=6, pady=2)
+
+        self.lbl_ram = ttk.Label(sys_frame, text="内存: -- / -- ( -- %)", font=("Microsoft YaHei", 9))
+        self.lbl_ram.grid(row=0, column=2, padx=(4, 8), pady=2, sticky="w")
+
+        # 第1行及后续行：显卡核心负载 与 显存 (严格分列对齐)
+        self.lbl_gpu_cores = []
+        self.lbl_gpu_mems = []
+        if self._gpu_names:
+            for i, name in enumerate(self._gpu_names):
+                row_idx = i + 1
+                lbl_core = ttk.Label(sys_frame, text=f"显卡 {i} ({name}): 核心负载 -- %", font=("Microsoft YaHei", 9))
+                lbl_core.grid(row=row_idx, column=0, padx=(8, 4), pady=2, sticky="w")
+
+                sep_gpu = ttk.Label(sys_frame, text="│", foreground="#888888", font=("Microsoft YaHei", 9))
+                sep_gpu.grid(row=row_idx, column=1, padx=6, pady=2)
+
+                lbl_mem = ttk.Label(sys_frame, text="显存占用 -- / --", font=("Microsoft YaHei", 9))
+                lbl_mem.grid(row=row_idx, column=2, padx=(4, 8), pady=2, sticky="w")
+
+                self.lbl_gpu_cores.append(lbl_core)
+                self.lbl_gpu_mems.append(lbl_mem)
+        else:
+            lbl_nogpu = ttk.Label(sys_frame, text="独立显卡: 未检测到 NVIDIA 独立显卡或驱动未就绪", font=("Microsoft YaHei", 9), foreground="gray")
+            lbl_nogpu.grid(row=1, column=0, columnspan=3, padx=(8, 4), pady=2, sticky="w")
+
         ttk.Separator(self.right_frame, orient='horizontal').pack(fill=tk.X, padx=5, pady=2)
 
-        ttk.Label(self.right_frame, text="日志输出").pack(anchor=tk.W, padx=5, pady=(5, 0))
+        ttk.Label(self.right_frame, text="日志输出").pack(anchor=tk.W, padx=5, pady=(2, 0))
         log_frame = ttk.Frame(self.right_frame)
         log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.log_text = tk.Text(log_frame, bg="black", fg="white", font=("Consolas", 10), width=1)
@@ -428,6 +500,9 @@ CPU MoE 专家层数 (-ncmoe)： MoE 模型（如 Qwen-35B-A3B）前 N 层专家
 
 4. 性能与内存
 计算设备 (-dev, --device)： 显式指定计算后端或显卡（如 CUDA0 / Vulkan0 / 0），防止双显卡跑错至核显。
+多卡切分模式 (-sm, --split-mode)： 多卡切分机制。layer（流水线按层切分，默认且最兼容，适合普通PCIe通道）；row（张量切分，多卡并行算力叠加，适合NVLink/高速双卡）；none（单卡运行）。
+多卡显存比例 (-ts, --tensor-split)： 逗号分隔的多卡显存分配权重（如 3,1 或 16,8）。留空则由 llama.cpp 自动按各卡空闲显存比例分配。可用于异构显卡或为主卡预留显存防 OOM。
+主 GPU 索引 (-mg, --main-gpu)： 指定主控 GPU 编号（默认为 0）。若 GPU 0 为桌面亮机卡，可填 1 将主任务移至第二张卡。
 CPU 线程数 (-t / -tb)： 生成线程与 Batch 提示词处理线程数。
 Flash Attention (-fa)： 闪烁注意力（推荐 auto / on），大幅降低显存并提速。
 KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0 及 turbo4/turbo3/turbo2 极致压缩）。
@@ -475,10 +550,10 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
         try:
             if is_running:
                 self.lbl_run_status.config(text="运行状态: 是")
-                self.lbl_pid.config(text=f"PID: {pid}")
+                self.lbl_pid.config(text=f"进程号 (PID): {pid}")
             else:
                 self.lbl_run_status.config(text="运行状态: 否")
-                self.lbl_pid.config(text="PID: -")
+                self.lbl_pid.config(text="进程号 (PID): -")
         except tk.TclError:
             pass
 
@@ -615,6 +690,9 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             ("host", "--host", False),
             ("port", "--port", False),
             ("device", "-dev", False),
+            ("split_mode", "-sm", False),
+            ("tensor_split", "-ts", False),
+            ("main_gpu", "-mg", False),
             ("ctx", "-c", False),
             ("threads", "-t", False), 
             ("threads_batch", "-tb", False), 
@@ -826,10 +904,135 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             pass
         self.update_process_info(False)
 
+    # ====== 系统硬件资源监控 (纯 ctypes 底层直调，0 子进程开销，<1ms 耗时) ======
+    def _init_sys_monitor(self):
+        self._prev_cpu_times = None
+        self._nvml = None
+        self._gpu_handles = []
+        self._gpu_names = []
+        
+        if os.name == 'nt':
+            try:
+                nvml = ctypes.CDLL('nvml.dll')
+                nvml.nvmlInit()
+                count = ctypes.c_uint()
+                nvml.nvmlDeviceGetCount_v2(ctypes.byref(count))
+                for i in range(count.value):
+                    handle = ctypes.c_void_p()
+                    nvml.nvmlDeviceGetHandleByIndex_v2(i, ctypes.byref(handle))
+                    name_buf = ctypes.create_string_buffer(64)
+                    nvml.nvmlDeviceGetName(handle, name_buf, 64)
+                    raw_name = name_buf.value.decode('utf-8', errors='ignore')
+                    short_name = raw_name.replace('NVIDIA GeForce ', '').replace('NVIDIA ', '')
+                    self._gpu_handles.append(handle)
+                    self._gpu_names.append(short_name)
+                self._nvml = nvml
+            except Exception:
+                self._nvml = None
+
+    def _shutdown_sys_monitor(self):
+        if self._nvml:
+            try:
+                self._nvml.nvmlShutdown()
+            except Exception:
+                pass
+            self._nvml = None
+
+    def _get_cpu_pct(self):
+        if os.name != 'nt':
+            return None
+        try:
+            idle, kernel, user = _FILETIME(), _FILETIME(), _FILETIME()
+            ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user))
+            i_val = (idle.dwHighDateTime << 32) | idle.dwLowDateTime
+            k_val = (kernel.dwHighDateTime << 32) | kernel.dwLowDateTime
+            u_val = (user.dwHighDateTime << 32) | user.dwLowDateTime
+            
+            if self._prev_cpu_times:
+                prev_i, prev_k, prev_u = self._prev_cpu_times
+                delta_i = i_val - prev_i
+                delta_k = k_val - prev_k
+                delta_u = u_val - prev_u
+                total_sys = delta_k + delta_u
+                if total_sys > 0:
+                    pct = max(0.0, min(100.0, ((total_sys - delta_i) / total_sys) * 100.0))
+                else:
+                    pct = 0.0
+            else:
+                pct = None
+            self._prev_cpu_times = (i_val, k_val, u_val)
+            return pct
+        except Exception:
+            return None
+
+    def _get_ram_info(self):
+        if os.name != 'nt':
+            return None
+        try:
+            stat = _MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            total_gb = stat.ullTotalPhys / (1024 ** 3)
+            used_gb = (stat.ullTotalPhys - stat.ullAvailPhys) / (1024 ** 3)
+            load_pct = stat.dwMemoryLoad
+            return used_gb, total_gb, load_pct
+        except Exception:
+            return None
+
+    def _update_sys_stats(self):
+        if getattr(self, '_is_destroyed', False):
+            return
+        try:
+            # 1. 处理器负载更新
+            cpu_pct = self._get_cpu_pct()
+            if cpu_pct is not None and hasattr(self, 'lbl_cpu'):
+                self.lbl_cpu.config(text=f"CPU: {cpu_pct:>4.1f}%")
+
+            # 2. 系统内存更新
+            ram_info = self._get_ram_info()
+            if ram_info and hasattr(self, 'lbl_ram'):
+                used_gb, total_gb, load_pct = ram_info
+                self.lbl_ram.config(text=f"内存: {used_gb:.1f} GB / {total_gb:.1f} GB ({load_pct}%)")
+
+            # 3. 显卡与显存更新 (支持单卡/多卡，分列精准对齐)
+            if self._nvml and self._gpu_handles and hasattr(self, 'lbl_gpu_cores') and hasattr(self, 'lbl_gpu_mems'):
+                for i, handle in enumerate(self._gpu_handles):
+                    if i < len(self.lbl_gpu_cores) and i < len(self.lbl_gpu_mems):
+                        try:
+                            mem = _NVMLMemory()
+                            self._nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem))
+                            util = _NVMLUtilization()
+                            self._nvml.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util))
+                            
+                            used_gb = mem.used / (1024 ** 3)
+                            total_gb = mem.total / (1024 ** 3)
+                            vram_pct = (mem.used / mem.total * 100.0) if mem.total > 0 else 0.0
+                            name = self._gpu_names[i]
+                            
+                            self.lbl_gpu_cores[i].config(
+                                text=f"显卡 {i} ({name}): 核心负载 {util.gpu:>2}%"
+                            )
+                            self.lbl_gpu_mems[i].config(
+                                text=f"显存占用 {used_gb:.1f} GB / {total_gb:.1f} GB ({vram_pct:.1f}%)"
+                            )
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        if not getattr(self, '_is_destroyed', False):
+            try:
+                self.root.after(1000, self._update_sys_stats)
+            except tk.TclError:
+                pass
+
     def on_close(self):
         """窗口关闭处理：防止孤儿进程"""
+        self._is_destroyed = True
+        self._shutdown_sys_monitor()
         if self._running and self._current_proc and self._current_proc.poll() is None:
             if not messagebox.askyesno("确认退出", "服务器仍在运行，关闭窗口将终止服务器。\n确定要退出吗？"):
+                self._is_destroyed = False
                 return
             try:
                 if os.name == 'nt' and self._current_proc.pid:
@@ -841,6 +1044,7 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
                 pass
         elif self._external_running:
             if not messagebox.askyesno("确认退出", "检测到外部服务器在运行。\n确定要退出启动器吗？"):
+                self._is_destroyed = False
                 return
         try:
             self.root.destroy()
