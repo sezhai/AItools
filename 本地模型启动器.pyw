@@ -259,11 +259,6 @@ class LlamaLauncherApp:
         # --- 4. 性能与内存 ---
         g_perf = ttk.LabelFrame(self.left_frame, text="性能与内存")
         g_perf.pack(fill=tk.X, padx=5, pady=5)
-        # 🟢 新增：计算设备与多卡参数
-        self.create_input_row(g_perf, "计算设备 (-dev, --device):", "", "device")
-        self.create_combo_row(g_perf, "多卡切分模式 (-sm, --split-mode):", ["", "layer", "row", "none"], "", "split_mode", readonly=True)
-        self.create_input_row(g_perf, "多卡显存比例 (-ts, --tensor-split):", "", "tensor_split")
-        self.create_input_row(g_perf, "主GPU索引 (-mg, --main-gpu):", "", "main_gpu")
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
         self.create_combo_row(g_perf, "Flash Attention (-fa):", ["auto", "on", "off"], "auto", "fa", readonly=True)
@@ -283,6 +278,10 @@ class LlamaLauncherApp:
         # 🟢 新增：不保留主机 RAM 模型副本
         self.create_check_row(g_perf, "不保留主机RAM副本 (--no-host)", False, "no_host")
         self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "", "ctx_checkpoints")
+        # 🟢 多卡扩展参数 (按需配置)
+        self.create_combo_row(g_perf, "多卡切分模式 (-sm, --split-mode):", ["", "layer", "row", "none"], "", "split_mode", readonly=True)
+        self.create_input_row(g_perf, "多卡显存比例 (-ts, --tensor-split):", "", "tensor_split")
+        self.create_input_row(g_perf, "主GPU索引 (-mg, --main-gpu):", "", "main_gpu")
 
         # --- 5. 请求控制与模板 ---
         g_req = ttk.LabelFrame(self.left_frame, text="请求控制与模板")
@@ -499,10 +498,6 @@ CPU MoE 专家层数 (-ncmoe)： MoE 模型（如 Qwen-35B-A3B）前 N 层专家
 保留思考内容 (--reasoning-preserve)： 勾选后在上下文历史中保留历史轮次的思考痕迹。
 
 4. 性能与内存
-计算设备 (-dev, --device)： 显式指定计算后端或显卡（如 CUDA0 / Vulkan0 / 0），防止双显卡跑错至核显。
-多卡切分模式 (-sm, --split-mode)： 多卡切分机制。layer（流水线按层切分，默认且最兼容，适合普通PCIe通道）；row（张量切分，多卡并行算力叠加，适合NVLink/高速双卡）；none（单卡运行）。
-多卡显存比例 (-ts, --tensor-split)： 逗号分隔的多卡显存分配权重（如 3,1 或 16,8）。留空则由 llama.cpp 自动按各卡空闲显存比例分配。可用于异构显卡或为主卡预留显存防 OOM。
-主 GPU 索引 (-mg, --main-gpu)： 指定主控 GPU 编号（默认为 0）。若 GPU 0 为桌面亮机卡，可填 1 将主任务移至第二张卡。
 CPU 线程数 (-t / -tb)： 生成线程与 Batch 提示词处理线程数。
 Flash Attention (-fa)： 闪烁注意力（推荐 auto / on），大幅降低显存并提速。
 KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0 及 turbo4/turbo3/turbo2 极致压缩）。
@@ -514,6 +509,9 @@ KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0
 缓存 RAM 限制 (--cache-ram)： 限制主机缓存 RAM（设为 0 可关闭内存缓存）。
 不保留主机 RAM 副本 (--no-host)： 配合 --cache-ram 0 彻底杜绝主机内存冗余副本。
 上下文检查点 (--ctx-checkpoints)： 长上下文回退与分支检查点数（默认 32）。
+多卡切分模式 (-sm, --split-mode)： 多卡切分机制。layer（流水线按层切分，默认且最兼容，适合普通PCIe通道）；row（张量切分，多卡并行算力叠加，适合NVLink/高速双卡）；none（单卡运行）。
+多卡显存比例 (-ts, --tensor-split)： 逗号分隔的多卡显存分配权重（如 3,1 或 16,8）。留空则由 llama.cpp 自动按各卡空闲显存比例分配。可用于异构显卡或为主卡预留显存防 OOM。
+主 GPU 索引 (-mg, --main-gpu)： 指定主控 GPU 编号（默认为 0）。若 GPU 0 为桌面亮机卡，可填 1 将主任务移至第二张卡。
 
 5. 请求控制与模板
 并发槽位数 (-np)： 并发处理槽位数（单用户推荐 1）。
@@ -689,10 +687,6 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             ("image_max_tokens", "--image-max-tokens", False),
             ("host", "--host", False),
             ("port", "--port", False),
-            ("device", "-dev", False),
-            ("split_mode", "-sm", False),
-            ("tensor_split", "-ts", False),
-            ("main_gpu", "-mg", False),
             ("ctx", "-c", False),
             ("threads", "-t", False), 
             ("threads_batch", "-tb", False), 
@@ -713,6 +707,9 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             ("cache_ram", "--cache-ram", False),
             ("no_host", "--no-host", True),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
+            ("split_mode", "-sm", False),
+            ("tensor_split", "-ts", False),
+            ("main_gpu", "-mg", False),
             ("reasoning", "--reasoning", False),
             ("reasoning_effort", "--reasoning-effort", False),
             ("reasoning_budget", "--reasoning-budget", False),
