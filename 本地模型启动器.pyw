@@ -267,8 +267,6 @@ class LlamaLauncherApp:
         self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "turbo4", "turbo3", "turbo2", "turbo8"], "f16", "ctv", readonly=False)
         # 🟢 KV 缓存优化开关 (默认开启；取消勾选将传 --no-kv-offload)
         self.create_check_row(g_perf, "优化/卸载KV缓存 (-kvo)", True, "kvo")
-        # 🟢 新增：统一 KV 缓存池
-        self.create_check_row(g_perf, "统一KV缓存池 (--kv-unified)", False, "kv_unified")
         # 🟢 新增：缓存块重用 (多轮长对话/RAG首字加速，建议 256 或 512)
         self.create_input_row(g_perf, "缓存块重用 (--cache-reuse):", "", "cache_reuse")
         # 🟢 新版 llama.cpp：统一为 --load-mode
@@ -506,7 +504,6 @@ CPU 线程数 (-t / -tb)： 生成线程与 Batch 提示词处理线程数。
 Flash Attention (-fa)： 闪烁注意力（推荐 auto / on），大幅降低显存并提速。
 KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0 及 turbo4/turbo3/turbo2 极致压缩）。
 优化/卸载 KV 缓存 (-kvo)： 默认开启；取消勾选将显式传 --no-kv-offload 禁用卸载。
-统一 KV 缓存池 (--kv-unified)： 勾选后统筹管理 K/V 缓存池，提升长上下文利用率。
 缓存块重用 (--cache-reuse)： 设置 KV 缓存块重用阈值（建议 256 或 512），大幅降低多轮长对话与 RAG 的首字延迟。
 加载模式 (-lm, --load-mode)： auto / none / mmap / mlock / mmap+mlock / dio。
 大张量按需读取 (--tensor-read-lazy)： on / auto / off，超大嵌入模型在 mmap 下大幅降低 RAM 占用。
@@ -690,7 +687,6 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             ("sleep_idle_seconds", "--sleep-idle-seconds", False),
             ("embedding", "--embedding", True),
             ("reranking", "--reranking", True),
-            ("kv_unified", "--kv-unified", True),
             ("cache_reuse", "--cache-reuse", False),
             ("load_mode", "--load-mode", False),
             ("tensor_read_lazy", "--tensor-read-lazy", False),
