@@ -246,13 +246,14 @@ class LlamaLauncherApp:
         self.create_input_row(g_model, "CPU MoE专家层数 (-ncmoe):", "", "ncmoe")
         self.create_input_row(g_model, "批处理大小 (-b):", "2048", "b")
         self.create_input_row(g_model, "物理批处理大小 (-ub):", "512", "ub")
+        # 🟢 新增：禁止上下文滑动截断
+        self.create_check_row(g_model, "禁止上下文滑动 (--no-context-shift)", False, "no_context_shift")
 
         # --- 3. 推理/思考模式 ---
         g_reason = ttk.LabelFrame(self.left_frame, text="推理/思考模式")
         g_reason.pack(fill=tk.X, padx=5, pady=5)
         self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["auto", "on", "off"], "auto", "reasoning", readonly=True)
         self.create_combo_row(g_reason, "思考力度 (--reasoning-effort):", ["default", "minimal", "low", "medium", "high", "xhigh", "max"], "default", "reasoning_effort", readonly=True)
-        self.create_input_row(g_reason, "思考预算 (--reasoning-budget):", "", "reasoning_budget")
         self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["auto", "none", "deepseek", "deepseek-legacy"], "auto", "reasoning_format", readonly=True)
         self.create_check_row(g_reason, "保留思考内容 (--reasoning-preserve)", False, "reasoning_preserve")
 
@@ -278,15 +279,15 @@ class LlamaLauncherApp:
         # 🟢 新增：不保留主机 RAM 模型副本
         self.create_check_row(g_perf, "不保留主机RAM副本 (--no-host)", False, "no_host")
         self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "", "ctx_checkpoints")
-        # 🟢 多卡扩展参数 (按需配置)
-        self.create_combo_row(g_perf, "多卡切分模式 (-sm, --split-mode):", ["", "layer", "row", "none"], "", "split_mode", readonly=True)
-        self.create_input_row(g_perf, "多卡显存比例 (-ts, --tensor-split):", "", "tensor_split")
-        self.create_input_row(g_perf, "主GPU索引 (-mg, --main-gpu):", "", "main_gpu")
 
         # --- 5. 请求控制与模板 ---
         g_req = ttk.LabelFrame(self.left_frame, text="请求控制与模板")
         g_req.pack(fill=tk.X, padx=5, pady=5)
         self.create_input_row(g_req, "并发槽位数 (-np, --parallel):", "1", "np")
+        # 🟢 新增：HTTP 网络处理独立线程数
+        self.create_input_row(g_req, "HTTP网络线程 (--threads-http):", "", "threads_http")
+        # 🟢 新增：空闲自动休眠超时 (秒)
+        self.create_input_row(g_req, "空闲休眠超时 (--sleep-idle-seconds):", "", "sleep_idle_seconds")
         self.create_check_row(g_req, "启用向量嵌入 (--embedding)", False, "embedding")
         self.create_check_row(g_req, "启用重排序 (--reranking)", False, "reranking")
         self.create_check_row(g_req, "使用 Jinja 模板 (--jinja)", True, "jinja")
@@ -366,6 +367,9 @@ class LlamaLauncherApp:
         # 🟢 新增：DRY 采样器参数（目前 llama.cpp 效果最佳防复读）
         self.create_input_row(g_adv, "DRY 倍率 (--dry-multiplier):", "", "dry_multiplier")
         self.create_input_row(g_adv, "DRY 基数 (--dry-base):", "", "dry_base")
+        # 🟢 新增：XTC 排除高频词采样器（提升自然度与创造力，消除套话）
+        self.create_input_row(g_adv, "XTC 概率门限 (--xtc-threshold):", "", "xtc_threshold")
+        self.create_input_row(g_adv, "XTC 触发概率 (--xtc-probability):", "", "xtc_probability")
         self.create_input_row(g_adv, "随机种子 (-s, --seed):", "-1", "seed")
 
     def build_right_panel(self):
@@ -475,7 +479,7 @@ class LlamaLauncherApp:
         help_content = """=== llama.cpp 启动器 使用指南 (最新版规范) ===
 
 1. 基础设置 (必填)
-llama.cpp 所在目录： 存放 llama.exe、llama-server.exe 或 llama 核心程序文件夹。
+llama.cpp 所在目录： 存放 llama.exe (主程序入口) 的文件夹，或直接指定可执行文件。
 模型路径 (-m)： 大语言模型文件绝对路径（.gguf 格式）。
 多模态投影文件 (--mmproj)： 视觉模型（LLaVA、Qwen-VL）的投射权重；纯文本模型保持为空。
 视觉模型交CPU处理 (--no-mmproj-offload)： 勾选后将视觉投影模型交由 CPU 运算，节省 ~1.0-1.5GB 显存。
@@ -489,12 +493,12 @@ API 密钥 (--api-key)： 设置服务鉴权 Token，防误调或满足客户端
 GPU 加速层数 (-ngl)： 卸载到 GPU 的层数，显存充裕填 99/999。
 CPU MoE 专家层数 (-ncmoe)： MoE 模型（如 Qwen-35B-A3B）前 N 层专家留由 CPU 运算。
 批处理大小 (-b / -ub)： -b 为逻辑 Batch，-ub 为物理硬件计算 Batch。
+禁止上下文滑动 (--no-context-shift)： 勾选后超长上下文将直接报错截断，禁止自动滑动窗口裁剪历史。
 
 3. 推理/思考模式
 推理模式 (--reasoning)： auto / on / off。
 思考力度 (--reasoning-effort)： default / minimal / low / medium / high / xhigh / max。
 思考格式 (--reasoning-format)： auto / none / deepseek / deepseek-legacy。
-思考预算 (--reasoning-budget)： 最大思考 Token 数，-1 为不限制。
 保留思考内容 (--reasoning-preserve)： 勾选后在上下文历史中保留历史轮次的思考痕迹。
 
 4. 性能与内存
@@ -509,12 +513,11 @@ KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0
 缓存 RAM 限制 (--cache-ram)： 限制主机缓存 RAM（设为 0 可关闭内存缓存）。
 不保留主机 RAM 副本 (--no-host)： 配合 --cache-ram 0 彻底杜绝主机内存冗余副本。
 上下文检查点 (--ctx-checkpoints)： 长上下文回退与分支检查点数（默认 32）。
-多卡切分模式 (-sm, --split-mode)： 多卡切分机制。layer（流水线按层切分，默认且最兼容，适合普通PCIe通道）；row（张量切分，多卡并行算力叠加，适合NVLink/高速双卡）；none（单卡运行）。
-多卡显存比例 (-ts, --tensor-split)： 逗号分隔的多卡显存分配权重（如 3,1 或 16,8）。留空则由 llama.cpp 自动按各卡空闲显存比例分配。可用于异构显卡或为主卡预留显存防 OOM。
-主 GPU 索引 (-mg, --main-gpu)： 指定主控 GPU 编号（默认为 0）。若 GPU 0 为桌面亮机卡，可填 1 将主任务移至第二张卡。
 
 5. 请求控制与模板
 并发槽位数 (-np)： 并发处理槽位数（单用户推荐 1）。
+HTTP 网络线程 (--threads-http)： 处理 HTTP 请求的独立工作线程数，高并发时避免阻塞推理。
+空闲休眠超时 (--sleep-idle-seconds)： 连续空闲 N 秒后自动将模型置入休眠（降功耗降温），新请求到来自动毫秒级唤醒。
 使用 Jinja 模板 (--jinja)： 默认开启；取消勾选将传 --no-jinja。
 外部模板文件 (--chat-template-file)： 指定自定义外部 Jinja 模板文件（如 deepseek 格式模板）。
 指定模板名称 (--chat-template)： 强制指定内置模板（如 qwen2, deepseek3, chatml 等）。
@@ -531,6 +534,7 @@ KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0
 温度 (--temp) / Top-P / Top-K / Min-P： 标准核采样与最小概率门限。
 存在惩罚 (--presence-penalty) / 频率惩罚 (--frequency-penalty)： 重复抑制。
 DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读算法（优于传统 repeat-penalty）。
+XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话高频词，大幅增强回答自然度与创造力。
 """
         txt.insert(tk.END, help_content)
         txt.config(state=tk.DISABLED)
@@ -652,30 +656,13 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
         if not llama_dir:
             llama_dir = "."
             
-        exe_candidates = [
-            ("llama.exe", True),         
-            ("llama-server.exe", False), 
-            ("llama", True),             
-            ("llama-server", False)      
-        ]
-        
-        server_exe = None
-        is_unified = False
-        
-        for exe_name, unified in exe_candidates:
-            full_path = os.path.join(llama_dir, exe_name)
-            if os.path.exists(full_path):
-                server_exe = full_path
-                is_unified = unified
-                break
-                
-        if not server_exe:
-            server_exe = os.path.join(llama_dir, "llama-server.exe" if os.name == 'nt' else "llama-server")
+        # 支持直接指定可执行文件或所在目录
+        if os.path.isfile(llama_dir):
+            server_exe = llama_dir
+        else:
+            server_exe = os.path.join(llama_dir, "llama.exe" if os.name == 'nt' else "llama")
             
-        cmd = [server_exe]
-        
-        if is_unified:
-            cmd.append("server")
+        cmd = [server_exe, "server"]
         
         mappings = [
             ("model", "-m", False),
@@ -688,6 +675,7 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             ("host", "--host", False),
             ("port", "--port", False),
             ("ctx", "-c", False),
+            ("no_context_shift", "--no-context-shift", True),
             ("threads", "-t", False), 
             ("threads_batch", "-tb", False), 
             ("fa", "-fa", False),
@@ -698,6 +686,8 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             ("b", "-b", False),
             ("ub", "-ub", False),
             ("np", "-np", False),
+            ("threads_http", "--threads-http", False),
+            ("sleep_idle_seconds", "--sleep-idle-seconds", False),
             ("embedding", "--embedding", True),
             ("reranking", "--reranking", True),
             ("kv_unified", "--kv-unified", True),
@@ -707,12 +697,8 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             ("cache_ram", "--cache-ram", False),
             ("no_host", "--no-host", True),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
-            ("split_mode", "-sm", False),
-            ("tensor_split", "-ts", False),
-            ("main_gpu", "-mg", False),
             ("reasoning", "--reasoning", False),
             ("reasoning_effort", "--reasoning-effort", False),
-            ("reasoning_budget", "--reasoning-budget", False),
             ("reasoning_format", "--reasoning-format", False),
             ("reasoning_preserve", "--reasoning-preserve", True),
             ("n_predict", "-n", False),
@@ -726,6 +712,8 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             ("repeat_last_n", "--repeat-last-n", False),
             ("dry_multiplier", "--dry-multiplier", False),
             ("dry_base", "--dry-base", False),
+            ("xtc_threshold", "--xtc-threshold", False),
+            ("xtc_probability", "--xtc-probability", False),
             ("seed", "-s", False),
             ("chat_template_file", "--chat-template-file", False),
             ("chat_template", "--chat-template", False),
@@ -788,6 +776,8 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
 
     def export_script(self):
         cmd_list = self.build_command()
+        exe_path = cmd_list[0]
+        work_dir = os.path.dirname(os.path.abspath(exe_path)) if os.path.exists(exe_path) else ""
         
         # BAT 特殊字符处理
         _bat_special = set(' &|<>()^!;=,')
@@ -800,7 +790,9 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
             else:
                 safe_cmd.append(item)
 
-        script_content = "@echo off\nchcp 65001 > nul\ntitle Llama Server 独立脚本\n\n"
+        script_content = "@echo off\nchcp 65001 > nul\ntitle Llama 启动脚本\n\n"
+        if work_dir:
+            script_content += f'cd /d "{work_dir}"\n\n'
         script_content += " ".join(safe_cmd) + "\n\npause"
         
         base_name = os.path.splitext(os.path.basename(self.current_config_file))[0] if self.current_config_file else "server"
@@ -1101,6 +1093,14 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
     def run_process(self, cmd):
         proc = None
         try:
+            exe_path = cmd[0]
+            work_dir = os.path.dirname(os.path.abspath(exe_path)) if os.path.exists(exe_path) else None
+            
+            # Windows 环境下将可执行文件所在目录动态注入 PATH 与 cwd，确保 ggml.dll / cudart64_*.dll / llama.dll 正常加载
+            env = os.environ.copy()
+            if work_dir and os.path.isdir(work_dir):
+                env["PATH"] = work_dir + os.pathsep + env.get("PATH", "")
+
             proc = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.PIPE, 
@@ -1109,6 +1109,8 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
                 encoding='utf-8',
                 errors='replace',
                 bufsize=1,
+                cwd=work_dir,
+                env=env,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             )
             
@@ -1124,7 +1126,7 @@ DRY 采样器 (--dry-multiplier / --dry-base)： 当前效果最佳的防复读�
                 self._safe_after(0, self.server_stopped)
 
         except FileNotFoundError:
-            self._safe_after(0, self.append_log, "\n[错误] 在指定的目录下找不到执行程序 (llama.exe 或 llama-server.exe)！\n请确保 llama.cpp 目录选择正确。\n")
+            self._safe_after(0, self.append_log, f"\n[错误] 在指定的目录下找不到执行程序 ({cmd[0]})！\n请确保 llama.cpp 目录或执行文件选择正确。\n")
             self._safe_after(0, self.server_stopped)
         except Exception as e:
             self._safe_after(0, self.append_log, f"\n[错误] 发生异常: {str(e)}\n")
