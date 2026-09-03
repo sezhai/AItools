@@ -144,7 +144,9 @@ class LlamaLauncherApp:
         frame.pack(fill=tk.X, padx=5, pady=2)
         var = tk.BooleanVar(value=default_val)
         self.vars[var_key] = var
-        ttk.Checkbutton(frame, text=label_text, variable=var).pack(anchor=tk.W)
+        chk = ttk.Checkbutton(frame, text=label_text, variable=var)
+        chk.pack(anchor=tk.W)
+        return chk
 
     def create_file_row(self, parent, label_text, default_val, var_key, filetypes=(("All files", "*.*"),), initial_var_key=None):
         frame = ttk.Frame(parent)
@@ -277,6 +279,31 @@ class LlamaLauncherApp:
         # 🟢 新增：不保留主机 RAM 模型副本
         self.create_check_row(g_perf, "不保留主机RAM副本 (--no-host)", False, "no_host")
         self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "", "ctx_checkpoints")
+
+        # --- 4b. 多卡模式 ---
+        g_mgpu = ttk.LabelFrame(self.left_frame, text="多卡模式")
+        g_mgpu.pack(fill=tk.X, padx=5, pady=5)
+        self.create_check_row(g_mgpu, "启用多卡模式 (多GPU分布式切分)", False, "enable_multigpu")
+        cb_sm = self.create_combo_row(g_mgpu, "多卡切分模式 (-sm, --split-mode):", ["layer", "row", "none"], "layer", "split_mode", readonly=True)
+        ent_ts = self.create_input_row(g_mgpu, "多卡显存比例 (-ts, --tensor-split):", "", "tensor_split")
+        ent_mg = self.create_input_row(g_mgpu, "主GPU索引 (-mg, --main-gpu):", "", "main_gpu")
+
+        self._mgpu_entries = [cb_sm, ent_ts, ent_mg]
+
+        def _update_mgpu_state(*_):
+            is_active = self.vars["enable_multigpu"].get()
+            for ent in self._mgpu_entries:
+                try:
+                    if isinstance(ent, ttk.Combobox):
+                        ent.configure(state="readonly" if is_active else "disabled")
+                    else:
+                        ent.configure(state="normal" if is_active else "disabled")
+                except tk.TclError:
+                    pass
+
+        self.vars["enable_multigpu"].trace_add("write", _update_mgpu_state)
+        _update_mgpu_state()
+        self.root.after(100, _update_mgpu_state)
 
         # --- 5. 请求控制与模板 ---
         g_req = ttk.LabelFrame(self.left_frame, text="请求控制与模板")
@@ -511,6 +538,12 @@ KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0
 不保留主机 RAM 副本 (--no-host)： 配合 --cache-ram 0 彻底杜绝主机内存冗余副本。
 上下文检查点 (--ctx-checkpoints)： 长上下文回退与分支检查点数（默认 32）。
 
+4b. 多卡模式
+启用多卡模式： 勾选开启多 GPU 协同切分。未勾选时强制传 -sm none，即使系统安装有多张显卡也严格锁定在默认主显卡上运行。
+多卡切分模式 (-sm, --split-mode)： layer（按层切分，最推荐且最兼容）；row（按张量切分，多卡算力并发叠加，适合NVLink/高速显卡）；none（单卡运行）。
+多卡显存比例 (-ts, --tensor-split)： 逗号分隔的显存分配权重（如 3,1 或 16,8）。留空则由 llama.cpp 自动按各卡空闲显存比例分配。
+主 GPU 索引 (-mg, --main-gpu)： 指定主控 GPU 编号（默认为 0）。
+
 5. 请求控制与模板
 并发槽位数 (-np)： 并发处理槽位数（单用户推荐 1）。
 HTTP 网络线程 (--threads-http)： 处理 HTTP 请求的独立工作线程数，高并发时避免阻塞推理。
@@ -524,7 +557,7 @@ HTTP 网络线程 (--threads-http)： 处理 HTTP 请求的独立工作线程数
   - draft-mtp: 多 Token 预测（如 Ornith/DeepSeek），使用模型内置头，无需外挂草稿文件。
   - draft-simple / draft-eagle3 / draft-dflash: 外挂轻量小草稿模型 (--model-draft)。
   - ngram-mod / ngram-simple: 纯 CPU 零显存开销的 N-gram 自推测加速。
-草稿最小概率 (--spec-draft-p-min)： 【极关键】投机置信度门限（建议 0.75~0.80），低于此概率提前退出，避免无效草稿拖慢速度。
+草稿最小概率 (--spec-draft-p-min)： 投机置信度门限（外挂小草稿建议 0.5~0.6，内置MTP/大步长建议 0.75~0.80），低于此概率提前退出，避免无效草稿拖慢速度。
 草稿 Tokens 范围 (--spec-draft-n-max / --spec-draft-n-min)： 单步投机最大/最小生成数量。
 
 6. 采样与高级采样
@@ -693,6 +726,9 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             ("cache_ram", "--cache-ram", False),
             ("no_host", "--no-host", True),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
+            ("split_mode", "-sm", False),
+            ("tensor_split", "-ts", False),
+            ("main_gpu", "-mg", False),
             ("reasoning", "--reasoning", False),
             ("reasoning_effort", "--reasoning-effort", False),
             ("reasoning_format", "--reasoning-format", False),
@@ -728,10 +764,14 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         _is_ext_draft = bool(_spec) and ("draft" in _spec) and (_spec != "draft-mtp")
         _is_spec = bool(_spec)
         _has_mmproj = bool(self.vars.get("mmproj", tk.StringVar()).get().strip())
+        _is_mgpu = self.vars.get("enable_multigpu", tk.BooleanVar()).get()
 
         for var_key, flag, is_boolean in mappings:
             if var_key not in self.vars: continue
             
+            # 多卡参数智能过滤：未勾选启用多卡模式时不传多卡专属参数
+            if var_key in ("split_mode", "tensor_split", "main_gpu") and not _is_mgpu:
+                continue
             # 视觉 CPU 卸载过滤：未选择多模态文件时不传
             if var_key == "no_mmproj_offload" and not _has_mmproj:
                 continue
@@ -756,6 +796,13 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 if var_key == "reasoning_effort" and val == "default":
                     continue
                 cmd.extend([flag, val])
+
+        # 🟢 多卡模式控制：未开启多卡模式时强制指定 -sm none，确保即使有多张显卡也只在默认主显卡上运行
+        if not _is_mgpu:
+            cmd.extend(["-sm", "none"])
+        else:
+            if not self.vars.get("split_mode", tk.StringVar()).get().strip():
+                cmd.extend(["-sm", "layer"])
 
         # 🟢 KV 缓存优化：默认启用，取消勾选时显式传 --no-kv-offload
         if "kvo" in self.vars and not self.vars["kvo"].get():
