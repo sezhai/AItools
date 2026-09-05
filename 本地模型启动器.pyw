@@ -280,37 +280,11 @@ class LlamaLauncherApp:
         self.create_check_row(g_perf, "不保留主机RAM副本 (--no-host)", False, "no_host")
         self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "", "ctx_checkpoints")
 
-        # --- 4b. 多卡模式 ---
-        g_mgpu = ttk.LabelFrame(self.left_frame, text="多卡模式")
-        g_mgpu.pack(fill=tk.X, padx=5, pady=5)
-        self.create_check_row(g_mgpu, "启用多卡模式 (多GPU分布式切分)", False, "enable_multigpu")
-        cb_sm = self.create_combo_row(g_mgpu, "多卡切分模式 (-sm, --split-mode):", ["layer", "row", "none"], "layer", "split_mode", readonly=True)
-        ent_ts = self.create_input_row(g_mgpu, "多卡显存比例 (-ts, --tensor-split):", "", "tensor_split")
-        ent_mg = self.create_input_row(g_mgpu, "主GPU索引 (-mg, --main-gpu):", "", "main_gpu")
-
-        self._mgpu_entries = [cb_sm, ent_ts, ent_mg]
-
-        def _update_mgpu_state(*_):
-            is_active = self.vars["enable_multigpu"].get()
-            for ent in self._mgpu_entries:
-                try:
-                    if isinstance(ent, ttk.Combobox):
-                        ent.configure(state="readonly" if is_active else "disabled")
-                    else:
-                        ent.configure(state="normal" if is_active else "disabled")
-                except tk.TclError:
-                    pass
-
-        self.vars["enable_multigpu"].trace_add("write", _update_mgpu_state)
-        _update_mgpu_state()
-        self.root.after(100, _update_mgpu_state)
 
         # --- 5. 请求控制与模板 ---
         g_req = ttk.LabelFrame(self.left_frame, text="请求控制与模板")
         g_req.pack(fill=tk.X, padx=5, pady=5)
         self.create_input_row(g_req, "并发槽位数 (-np, --parallel):", "1", "np")
-        # 🟢 新增：HTTP 网络处理独立线程数
-        self.create_input_row(g_req, "HTTP网络线程 (--threads-http):", "", "threads_http")
         # 🟢 新增：空闲自动休眠超时 (秒)
         self.create_input_row(g_req, "空闲休眠超时 (--sleep-idle-seconds):", "", "sleep_idle_seconds")
         self.create_check_row(g_req, "启用向量嵌入 (--embedding)", False, "embedding")
@@ -538,15 +512,8 @@ KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0
 不保留主机 RAM 副本 (--no-host)： 配合 --cache-ram 0 彻底杜绝主机内存冗余副本。
 上下文检查点 (--ctx-checkpoints)： 长上下文回退与分支检查点数（默认 32）。
 
-4b. 多卡模式
-启用多卡模式： 勾选开启多 GPU 协同切分。未勾选时强制传 -sm none，即使系统安装有多张显卡也严格锁定在默认主显卡上运行。
-多卡切分模式 (-sm, --split-mode)： layer（按层切分，最推荐且最兼容）；row（按张量切分，多卡算力并发叠加，适合NVLink/高速显卡）；none（单卡运行）。
-多卡显存比例 (-ts, --tensor-split)： 逗号分隔的显存分配权重（如 3,1 或 16,8）。留空则由 llama.cpp 自动按各卡空闲显存比例分配。
-主 GPU 索引 (-mg, --main-gpu)： 指定主控 GPU 编号（默认为 0）。
-
 5. 请求控制与模板
 并发槽位数 (-np)： 并发处理槽位数（单用户推荐 1）。
-HTTP 网络线程 (--threads-http)： 处理 HTTP 请求的独立工作线程数，高并发时避免阻塞推理。
 空闲休眠超时 (--sleep-idle-seconds)： 连续空闲 N 秒后自动将模型置入休眠（降功耗降温），新请求到来自动毫秒级唤醒。
 使用 Jinja 模板 (--jinja)： 默认开启；取消勾选将传 --no-jinja。
 外部模板文件 (--chat-template-file)： 指定自定义外部 Jinja 模板文件（如 deepseek 格式模板）。
@@ -716,7 +683,6 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             ("b", "-b", False),
             ("ub", "-ub", False),
             ("np", "-np", False),
-            ("threads_http", "--threads-http", False),
             ("sleep_idle_seconds", "--sleep-idle-seconds", False),
             ("embedding", "--embedding", True),
             ("reranking", "--reranking", True),
@@ -726,9 +692,6 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             ("cache_ram", "--cache-ram", False),
             ("no_host", "--no-host", True),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
-            ("split_mode", "-sm", False),
-            ("tensor_split", "-ts", False),
-            ("main_gpu", "-mg", False),
             ("reasoning", "--reasoning", False),
             ("reasoning_effort", "--reasoning-effort", False),
             ("reasoning_format", "--reasoning-format", False),
@@ -764,14 +727,10 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         _is_ext_draft = bool(_spec) and ("draft" in _spec) and (_spec != "draft-mtp")
         _is_spec = bool(_spec)
         _has_mmproj = bool(self.vars.get("mmproj", tk.StringVar()).get().strip())
-        _is_mgpu = self.vars.get("enable_multigpu", tk.BooleanVar()).get()
 
         for var_key, flag, is_boolean in mappings:
             if var_key not in self.vars: continue
             
-            # 多卡参数智能过滤：未勾选启用多卡模式时不传多卡专属参数
-            if var_key in ("split_mode", "tensor_split", "main_gpu") and not _is_mgpu:
-                continue
             # 视觉 CPU 卸载过滤：未选择多模态文件时不传
             if var_key == "no_mmproj_offload" and not _has_mmproj:
                 continue
@@ -796,13 +755,6 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 if var_key == "reasoning_effort" and val == "default":
                     continue
                 cmd.extend([flag, val])
-
-        # 🟢 多卡模式控制：未开启多卡模式时强制指定 -sm none，确保即使有多张显卡也只在默认主显卡上运行
-        if not _is_mgpu:
-            cmd.extend(["-sm", "none"])
-        else:
-            if not self.vars.get("split_mode", tk.StringVar()).get().strip():
-                cmd.extend(["-sm", "layer"])
 
         # 🟢 KV 缓存优化：默认启用，取消勾选时显式传 --no-kv-offload
         if "kvo" in self.vars and not self.vars["kvo"].get():
@@ -1058,26 +1010,117 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             except tk.TclError:
                 pass
 
+    def _prompt_exit_action(self, pid, host, port, is_internal):
+        """弹出退出处理对话框：提供关闭本地模型与留驻后台选项"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("退出确认")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+
+        result = [None]  # 'stop', 'keep', 'cancel'
+
+        def on_stop():
+            result[0] = 'stop'
+            dialog.destroy()
+
+        def on_keep():
+            result[0] = 'keep'
+            dialog.destroy()
+
+        def on_cancel():
+            result[0] = 'cancel'
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+        dialog.bind("<Escape>", lambda e: on_cancel())
+
+        main_f = ttk.Frame(dialog, padding=(22, 18, 22, 18))
+        main_f.pack(fill=tk.BOTH, expand=True)
+
+        lbl_title = ttk.Label(main_f, text="⚠️  本地模型服务器正在运行", font=("Microsoft YaHei", 11, "bold"), foreground="#c05621")
+        lbl_title.pack(anchor="w", pady=(0, 10))
+
+        pid_info = f" (PID: {pid})" if pid else ""
+        proc_desc = "当前程序启动的" if is_internal else "检测到外部运行的"
+        desc_msg = (
+            f"{proc_desc}本地模型服务仍在运行{pid_info}，监听地址为 {host}:{port}。\n\n"
+            f"请选择退出启动器时的处理方式：\n"
+            f"• 【关闭本地模型】：终止模型服务进程并释放显存/内存后退出。\n"
+            f"• 【留驻后台】：保持模型服务在后台继续运行，仅退出启动器窗口。"
+        )
+        lbl_desc = ttk.Label(main_f, text=desc_msg, font=("Microsoft YaHei", 9), justify=tk.LEFT, wraplength=450)
+        lbl_desc.pack(anchor="w", fill=tk.X, expand=True)
+
+        btn_f = ttk.Frame(main_f)
+        btn_f.pack(fill=tk.X, pady=(16, 0))
+
+        btn_cancel = ttk.Button(btn_f, text="取消", width=8, command=on_cancel)
+        btn_cancel.pack(side=tk.RIGHT, padx=(6, 0))
+
+        btn_keep = ttk.Button(btn_f, text="⚡ 留驻后台", width=12, command=on_keep)
+        btn_keep.pack(side=tk.RIGHT, padx=(6, 0))
+
+        btn_stop = ttk.Button(btn_f, text="🛑 关闭本地模型", width=15, command=on_stop)
+        btn_stop.pack(side=tk.RIGHT, padx=(0, 0))
+
+        btn_keep.focus_set()
+
+        # 根据内容自适应并居中显示在主窗口上方
+        dialog.update_idletasks()
+        win_w = max(490, dialog.winfo_reqwidth() + 30)
+        win_h = max(230, dialog.winfo_reqheight() + 20)
+        try:
+            rx = self.root.winfo_rootx() + (self.root.winfo_width() - win_w) // 2
+            ry = self.root.winfo_rooty() + (self.root.winfo_height() - win_h) // 2
+            dialog.geometry(f"{win_w}x{win_h}+{max(0, rx)}+{max(0, ry)}")
+        except Exception:
+            dialog.geometry(f"{win_w}x{win_h}")
+
+        dialog.grab_set()
+        self.root.wait_window(dialog)
+        return result[0]
+
     def on_close(self):
-        """窗口关闭处理：防止孤儿进程"""
+        """窗口关闭处理：支持关闭本地模型或留驻后台"""
+        is_internal = bool(self._running and self._current_proc and self._current_proc.poll() is None)
+        host, port = self._current_host_port()
+        is_external = bool(self._external_running or (not is_internal and self.detect_server()))
+
+        if is_internal or is_external:
+            pid = self._current_proc.pid if is_internal else self._find_pid_on_port(host, port)
+            action = self._prompt_exit_action(pid, host, port, is_internal)
+            if action not in ('stop', 'keep'):
+                # 取消退出，留在界面
+                return
+
+            if action == 'stop':
+                # 用户选择关闭本地模型
+                if is_internal and self._current_proc:
+                    try:
+                        if os.name == 'nt' and self._current_proc.pid:
+                            subprocess.run(["taskkill", "/F", "/T", "/PID", str(self._current_proc.pid)],
+                                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                        else:
+                            self._current_proc.terminate()
+                    except Exception:
+                        pass
+                elif is_external:
+                    if pid:
+                        try:
+                            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            subprocess.run(["taskkill", "/F", "/IM", "llama-server.exe"],
+                                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                        except Exception:
+                            pass
+            # 若 action == 'keep'，则不执行任何终止操作，让服务进程留驻后台继续运行
+
         self._is_destroyed = True
         self._shutdown_sys_monitor()
-        if self._running and self._current_proc and self._current_proc.poll() is None:
-            if not messagebox.askyesno("确认退出", "服务器仍在运行，关闭窗口将终止服务器。\n确定要退出吗？"):
-                self._is_destroyed = False
-                return
-            try:
-                if os.name == 'nt' and self._current_proc.pid:
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(self._current_proc.pid)],
-                                   capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                else:
-                    self._current_proc.terminate()
-            except Exception:
-                pass
-        elif self._external_running:
-            if not messagebox.askyesno("确认退出", "检测到外部服务器在运行。\n确定要退出启动器吗？"):
-                self._is_destroyed = False
-                return
         try:
             self.root.destroy()
         except tk.TclError:
@@ -1154,7 +1197,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 bufsize=1,
                 cwd=work_dir,
                 env=env,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == 'nt' else 0
             )
             
             self._current_proc = proc
