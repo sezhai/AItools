@@ -820,22 +820,34 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
 
     def detect_server(self):
         host, port = self._current_host_port()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.15)
         try:
-            with socket.create_connection((host, int(port)), timeout=1.0):
-                return True
+            return s.connect_ex((host, int(port))) == 0
         except (OSError, ValueError):
             return False
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
 
     def check_existing_server(self):
-        host, port = self._current_host_port()
-        if self.detect_server():
-            self._external_running = True
-            try:
-                self.lbl_status.config(text=f"检测到服务器已在运行 ({host}:{port})", fg="orange")
-                self.start_btn.config(text="⏹ 停止服务器")
-            except tk.TclError:
-                pass
-            self.append_log(f"[系统] 检测到 {host}:{port} 已有服务器在运行。\n")
+        def _worker():
+            if self.detect_server():
+                self._external_running = True
+                def _update_ui():
+                    if getattr(self, '_is_destroyed', False):
+                        return
+                    host, port = self._current_host_port()
+                    try:
+                        self.lbl_status.config(text=f"检测到服务器已在运行 ({host}:{port})", fg="orange")
+                        self.start_btn.config(text="⏹ 停止服务器")
+                    except tk.TclError:
+                        pass
+                    self.append_log(f"[系统] 检测到 {host}:{port} 已有服务器在运行。\n")
+                self._safe_after(0, _update_ui)
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _find_pid_on_port(self, host, port):
         if os.name != 'nt':
@@ -1013,6 +1025,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
     def _prompt_exit_action(self, pid, host, port, is_internal):
         """弹出退出处理对话框：提供关闭本地模型与留驻后台选项"""
         dialog = tk.Toplevel(self.root)
+        dialog.withdraw()  # 先隐藏，避免居中计算过程闪烁
         dialog.title("退出确认")
         dialog.resizable(False, False)
         dialog.transient(self.root)
@@ -1076,6 +1089,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         except Exception:
             dialog.geometry(f"{win_w}x{win_h}")
 
+        dialog.deiconify()  # 尺寸与位置计算完毕后立即显示
         dialog.grab_set()
         self.root.wait_window(dialog)
         return result[0]
@@ -1083,15 +1097,21 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
     def on_close(self):
         """窗口关闭处理：支持关闭本地模型或留驻后台"""
         is_internal = bool(self._running and self._current_proc and self._current_proc.poll() is None)
-        host, port = self._current_host_port()
-        is_external = bool(self._external_running or (not is_internal and self.detect_server()))
+        is_external = bool(self._external_running)
 
         if is_internal or is_external:
+            host, port = self._current_host_port()
             pid = self._current_proc.pid if is_internal else self._find_pid_on_port(host, port)
             action = self._prompt_exit_action(pid, host, port, is_internal)
             if action not in ('stop', 'keep'):
                 # 取消退出，留在界面
                 return
+
+            # 用户确认退出，立即隐藏主窗口，消除视觉停顿
+            try:
+                self.root.withdraw()
+            except Exception:
+                pass
 
             if action == 'stop':
                 # 用户选择关闭本地模型
@@ -1117,7 +1137,13 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                                            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
                         except Exception:
                             pass
-            # 若 action == 'keep'，则不执行任何终止操作，让服务进程留驻后台继续运行
+            # 若 action == 'keep'，则无需终止进程，让服务进程留驻后台继续运行
+        else:
+            # 无服务运行，立即隐藏主窗口
+            try:
+                self.root.withdraw()
+            except Exception:
+                pass
 
         self._is_destroyed = True
         self._shutdown_sys_monitor()
