@@ -265,8 +265,8 @@ class LlamaLauncherApp:
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
         self.create_combo_row(g_perf, "Flash Attention (-fa):", ["auto", "on", "off"], "auto", "fa", readonly=True)
-        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "turbo4", "turbo3", "turbo2", "turbo8"], "f16", "ctk", readonly=False)
-        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "turbo4", "turbo3", "turbo2", "turbo8"], "f16", "ctv", readonly=False)
+        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctk", readonly=False)
+        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctv", readonly=False)
         # 🟢 KV 缓存优化开关 (默认开启；取消勾选将传 --no-kv-offload)
         self.create_check_row(g_perf, "优化/卸载KV缓存 (-kvo)", True, "kvo")
         # 🟢 新增：缓存块重用 (多轮长对话/RAG首字加速，建议 256 或 512)
@@ -307,8 +307,8 @@ class LlamaLauncherApp:
         entry_draft_min = self.create_input_row(g_spec, "草稿最小Tokens (--spec-draft-n-min):", "", "draft_min")
         # 🟢 新增：极关键的投机解码置信度门限（防止吞吐雪崩）及草稿KV缓存类型
         entry_draft_p_min = self.create_input_row(g_spec, "草稿最小概率 (--spec-draft-p-min):", "", "draft_p_min")
-        combo_draft_ctk = self.create_combo_row(g_spec, "草稿K缓存类型 (-ctkd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl", "turbo4", "turbo3", "turbo2", "turbo8"], "", "draft_ctk", readonly=False)
-        combo_draft_ctv = self.create_combo_row(g_spec, "草稿V缓存类型 (-ctvd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl", "turbo4", "turbo3", "turbo2", "turbo8"], "", "draft_ctv", readonly=False)
+        combo_draft_ctk = self.create_combo_row(g_spec, "草稿K缓存类型 (-ctkd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctk", readonly=False)
+        combo_draft_ctv = self.create_combo_row(g_spec, "草稿V缓存类型 (-ctvd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctv", readonly=False)
 
         # 智能控件联动：区分外挂草稿模型类 vs 内置MTP vs N-gram
         self._ext_draft_entries = [entry_draft_model, combo_draft_ctk, combo_draft_ctv]
@@ -503,7 +503,7 @@ CPU MoE 专家层数 (-ncmoe)： MoE 模型（如 Qwen-35B-A3B）前 N 层专家
 4. 性能与内存
 CPU 线程数 (-t / -tb)： 生成线程与 Batch 提示词处理线程数。
 Flash Attention (-fa)： 闪烁注意力（推荐 auto / on），大幅降低显存并提速。
-KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0 及 turbo4/turbo3/turbo2 极致压缩）。
+KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0 等多种压缩）。
 优化/卸载 KV 缓存 (-kvo)： 默认开启；取消勾选将显式传 --no-kv-offload 禁用卸载。
 缓存块重用 (--cache-reuse)： 设置 KV 缓存块重用阈值（建议 256 或 512），大幅降低多轮长对话与 RAG 的首字延迟。
 加载模式 (-lm, --load-mode)： auto / none / mmap / mlock / mmap+mlock / dio。
