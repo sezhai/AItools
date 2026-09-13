@@ -7,6 +7,7 @@ import json
 import webbrowser
 import socket
 import ctypes
+from ctypes import wintypes
 
 # Windows Ctypes 结构体定义 (用于高性能系统监控)
 class _FILETIME(ctypes.Structure):
@@ -31,6 +32,12 @@ class _NVMLMemory(ctypes.Structure):
 class _NVMLUtilization(ctypes.Structure):
     _fields_ = [('gpu', ctypes.c_uint), ('memory', ctypes.c_uint)]
 
+class _PDH_FMT_COUNTERVALUE(ctypes.Structure):
+    _fields_ = [('CStatus', wintypes.DWORD), ('doubleValue', ctypes.c_double)]
+
+class _PDH_FMT_COUNTERVALUE_ITEM_W(ctypes.Structure):
+    _fields_ = [('szName', wintypes.LPWSTR), ('FmtValue', _PDH_FMT_COUNTERVALUE)]
+
 class LlamaLauncherApp:
     def __init__(self, root):
         self.root = root
@@ -46,6 +53,7 @@ class LlamaLauncherApp:
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
         self._running = False
+        self._server_ready = False
         self._current_proc = None
         self._external_running = False
         self._is_destroyed = False
@@ -185,6 +193,11 @@ class LlamaLauncherApp:
             filepath = filedialog.askopenfilename(**kwargs)
             if filepath:
                 var.set(filepath)
+                if var_key == "model":
+                    alias_var = self.vars.get("alias")
+                    if alias_var and not alias_var.get().strip():
+                        stem = os.path.splitext(os.path.basename(filepath))[0]
+                        alias_var.set(stem)
                 
         ttk.Button(frame, text="浏览...", command=browse_file, width=8).pack(side=tk.LEFT)
         return entry
@@ -257,7 +270,6 @@ class LlamaLauncherApp:
         self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["auto", "on", "off"], "auto", "reasoning", readonly=True)
         self.create_combo_row(g_reason, "思考力度 (--reasoning-effort):", ["default", "minimal", "low", "medium", "high", "xhigh", "max"], "default", "reasoning_effort", readonly=True)
         self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["auto", "none", "deepseek", "deepseek-legacy"], "auto", "reasoning_format", readonly=True)
-        self.create_check_row(g_reason, "保留思考内容 (--reasoning-preserve)", False, "reasoning_preserve")
 
         # --- 4. 性能与内存 ---
         g_perf = ttk.LabelFrame(self.left_frame, text="性能与内存")
@@ -265,16 +277,16 @@ class LlamaLauncherApp:
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
         self.create_combo_row(g_perf, "Flash Attention (-fa):", ["auto", "on", "off"], "auto", "fa", readonly=True)
-        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctk", readonly=False)
-        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctv", readonly=False)
+        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctk", readonly=True)
+        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctv", readonly=True)
         # 🟢 KV 缓存优化开关 (默认开启；取消勾选将传 --no-kv-offload)
         self.create_check_row(g_perf, "优化/卸载KV缓存 (-kvo)", True, "kvo")
         # 🟢 新增：缓存块重用 (多轮长对话/RAG首字加速，建议 256 或 512)
         self.create_input_row(g_perf, "缓存块重用 (--cache-reuse):", "", "cache_reuse")
         # 🟢 新版 llama.cpp：统一为 --load-mode
         self.create_combo_row(g_perf, "加载模式 (-lm, --load-mode):", ["", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio"], "", "load_mode", readonly=True)
-        # 🟢 新增：大张量按需读取 (节省大模型物理 RAM)
-        self.create_combo_row(g_perf, "大张量按需读取 (--tensor-read-lazy):", ["", "auto", "on", "off"], "", "tensor_read_lazy", readonly=True)
+        # 🟢 修正：按需延迟加载 (-lzm, --lazy-mode)，支持大张量/层嵌入按需读盘
+        self.create_combo_row(g_perf, "按需延迟加载 (-lzm, --lazy-mode):", ["", "auto", "on", "off"], "", "lazy_mode", readonly=True)
         self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "", "cache_ram")
         # 🟢 新增：不保留主机 RAM 模型副本
         self.create_check_row(g_perf, "不保留主机RAM副本 (--no-host)", False, "no_host")
@@ -299,7 +311,7 @@ class LlamaLauncherApp:
         # --- 5b. 投机解码 ---
         g_spec = ttk.LabelFrame(self.left_frame, text="投机解码")
         g_spec.pack(fill=tk.X, padx=5, pady=5)
-        self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache", "ngram-map-k", "ngram-map-k4v"], "", "spec_type")
+        self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache", "ngram-map-k", "ngram-map-k4v"], "", "spec_type", readonly=True)
         
         entry_draft_model = self.create_file_row(g_spec, "草稿模型路径 (--model-draft):", "", "draft_model",
                              filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
@@ -307,8 +319,8 @@ class LlamaLauncherApp:
         entry_draft_min = self.create_input_row(g_spec, "草稿最小Tokens (--spec-draft-n-min):", "", "draft_min")
         # 🟢 新增：极关键的投机解码置信度门限（防止吞吐雪崩）及草稿KV缓存类型
         entry_draft_p_min = self.create_input_row(g_spec, "草稿最小概率 (--spec-draft-p-min):", "", "draft_p_min")
-        combo_draft_ctk = self.create_combo_row(g_spec, "草稿K缓存类型 (-ctkd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctk", readonly=False)
-        combo_draft_ctv = self.create_combo_row(g_spec, "草稿V缓存类型 (-ctvd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctv", readonly=False)
+        combo_draft_ctk = self.create_combo_row(g_spec, "草稿K缓存类型 (-ctkd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctk", readonly=True)
+        combo_draft_ctv = self.create_combo_row(g_spec, "草稿V缓存类型 (-ctvd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctv", readonly=True)
 
         # 智能控件联动：区分外挂草稿模型类 vs 内置MTP vs N-gram
         self._ext_draft_entries = [entry_draft_model, combo_draft_ctk, combo_draft_ctv]
@@ -438,7 +450,7 @@ class LlamaLauncherApp:
                 self.lbl_gpu_cores.append(lbl_core)
                 self.lbl_gpu_mems.append(lbl_mem)
         else:
-            lbl_nogpu = ttk.Label(sys_frame, text="独立显卡: 未检测到 NVIDIA 独立显卡或驱动未就绪", font=("Microsoft YaHei", 9), foreground="gray")
+            lbl_nogpu = ttk.Label(sys_frame, text="独立显卡: 未检测到独立显卡 (N卡/A卡) 或驱动未就绪", font=("Microsoft YaHei", 9), foreground="gray")
             lbl_nogpu.grid(row=1, column=0, columnspan=3, padx=(8, 4), pady=2, sticky="w")
 
         ttk.Separator(self.right_frame, orient='horizontal').pack(fill=tk.X, padx=5, pady=2)
@@ -498,16 +510,15 @@ CPU MoE 专家层数 (-ncmoe)： MoE 模型（如 Qwen-35B-A3B）前 N 层专家
 推理模式 (--reasoning)： auto / on / off。
 思考力度 (--reasoning-effort)： default / minimal / low / medium / high / xhigh / max。
 思考格式 (--reasoning-format)： auto / none / deepseek / deepseek-legacy。
-保留思考内容 (--reasoning-preserve)： 勾选后在上下文历史中保留历史轮次的思考痕迹。
 
 4. 性能与内存
 CPU 线程数 (-t / -tb)： 生成线程与 Batch 提示词处理线程数。
 Flash Attention (-fa)： 闪烁注意力（推荐 auto / on），大幅降低显存并提速。
-KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0 等多种压缩）。
+KV Cache 类型 (-ctk / -ctv)： 上下文量化（默认 f16；支持 q8_0/q4_0 等官方标准枚举，不支持非标准值）。
 优化/卸载 KV 缓存 (-kvo)： 默认开启；取消勾选将显式传 --no-kv-offload 禁用卸载。
 缓存块重用 (--cache-reuse)： 设置 KV 缓存块重用阈值（建议 256 或 512），大幅降低多轮长对话与 RAG 的首字延迟。
 加载模式 (-lm, --load-mode)： auto / none / mmap / mlock / mmap+mlock / dio。
-大张量按需读取 (--tensor-read-lazy)： on / auto / off，超大嵌入模型在 mmap 下大幅降低 RAM 占用。
+按需延迟加载 (-lzm, --lazy-mode)： auto / on / off，大模型在 mmap 下按需读取层嵌入张量，大幅降低物理 RAM 占用。
 缓存 RAM 限制 (--cache-ram)： 限制主机缓存 RAM（设为 0 可关闭内存缓存）。
 不保留主机 RAM 副本 (--no-host)： 配合 --cache-ram 0 彻底杜绝主机内存冗余副本。
 上下文检查点 (--ctx-checkpoints)： 长上下文回退与分支检查点数（默认 32）。
@@ -539,6 +550,12 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
     def open_webui(self):
         host, port = self._current_host_port()
         url = f"http://{host}:{port}"
+        if not self.detect_server():
+            if self._running and not getattr(self, '_server_ready', False):
+                messagebox.showinfo("提示", "模型权重正在加载中，HTTP/Web 服务尚未就绪，请稍候片刻再打开控制台。")
+            else:
+                messagebox.showinfo("提示", f"服务未在运行 ({host}:{port})。\n请先启动模型服务器。")
+            return
         try:
             webbrowser.open(url)
             self.append_log(f"\n[系统] 正在浏览器中尝试打开 WebUI: {url}\n")
@@ -616,8 +633,15 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                             elif _no_mmap:
                                 self.vars["load_mode"].set("none")
 
+                VALID_KV_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
+
                 for k, v in config_data.items():
                     if k == "load_mode":
+                        continue
+                    # 兼容旧版配置迁移：tensor_read_lazy -> lazy_mode
+                    if k == "tensor_read_lazy" and "lazy_mode" in self.vars:
+                        if v in ("auto", "on", "off"):
+                            self.vars["lazy_mode"].set(v)
                         continue
                     if k in self.vars:
                         var = self.vars[k]
@@ -631,8 +655,14 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                                 v = "auto"
                             if k == "reasoning_format" and v not in ["auto", "none", "deepseek", "deepseek-legacy"]:
                                 v = "auto"
-                            if k in ("ctk", "ctv") and v == "":
-                                v = "f16"
+                            if k in ("ctk", "ctv"):
+                                if v not in VALID_KV_TYPES:
+                                    v = "f16"
+                            if k in ("draft_ctk", "draft_ctv"):
+                                if v and v not in VALID_KV_TYPES:
+                                    v = ""
+                            if k == "lazy_mode" and v not in ["", "auto", "on", "off"]:
+                                v = ""
                             if k == "reasoning_effort" and v not in ["default", "minimal", "low", "medium", "high", "xhigh", "max"]:
                                 v = "default"
                             if k == "spec_type" and v == "none":
@@ -653,14 +683,27 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         if not llama_dir:
             llama_dir = "."
             
-        # 支持直接指定可执行文件或所在目录
+        # 智能适配可执行文件：优先选用专用的 llama-server，杜绝传非法子命令
         if os.path.isfile(llama_dir):
-            server_exe = llama_dir
+            server_exe = os.path.abspath(llama_dir)
+            is_server_bin = "llama-server" in os.path.basename(server_exe).lower()
+            cmd = [server_exe] if is_server_bin else [server_exe, "server"]
         else:
-            server_exe = os.path.join(llama_dir, "llama.exe" if os.name == 'nt' else "llama")
+            server_bin_name = "llama-server.exe" if os.name == 'nt' else "llama-server"
+            server_candidate = os.path.join(llama_dir, server_bin_name)
+            if os.path.isfile(server_candidate):
+                server_exe = server_candidate
+                cmd = [server_exe]
+            else:
+                cli_bin_name = "llama.exe" if os.name == 'nt' else "llama"
+                cli_candidate = os.path.join(llama_dir, cli_bin_name)
+                if os.path.isfile(cli_candidate):
+                    server_exe = cli_candidate
+                    cmd = [server_exe, "server"]
+                else:
+                    server_exe = os.path.join(llama_dir, server_bin_name)
+                    cmd = [server_exe]
             
-        cmd = [server_exe, "server"]
-        
         mappings = [
             ("model", "-m", False),
             ("mmproj", "--mmproj", False),
@@ -688,14 +731,13 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             ("reranking", "--reranking", True),
             ("cache_reuse", "--cache-reuse", False),
             ("load_mode", "--load-mode", False),
-            ("tensor_read_lazy", "--tensor-read-lazy", False),
+            ("lazy_mode", "--lazy-mode", False),
             ("cache_ram", "--cache-ram", False),
             ("no_host", "--no-host", True),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
             ("reasoning", "--reasoning", False),
             ("reasoning_effort", "--reasoning-effort", False),
             ("reasoning_format", "--reasoning-format", False),
-            ("reasoning_preserve", "--reasoning-preserve", True),
             ("n_predict", "-n", False),
             ("temp", "--temp", False),
             ("top_p", "--top-p", False),
@@ -750,6 +792,11 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             else:
                 if not isinstance(val, str): continue
                 val = val.strip()
+                # 🟢 模型别名自动回退：若用户未显式指定 alias，则默认使用模型文件名（去除.gguf），避免 Web 端/第三方客户端解析异常或空白
+                if var_key == "alias" and not val:
+                    model_path = self.vars.get("model", tk.StringVar()).get().strip()
+                    if model_path:
+                        val = os.path.splitext(os.path.basename(model_path))[0]
                 if not val: continue
                 # reasoning_effort 为 default 时不显式传参
                 if var_key == "reasoning_effort" and val == "default":
@@ -840,12 +887,15 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                     if getattr(self, '_is_destroyed', False):
                         return
                     host, port = self._current_host_port()
+                    pid = self._find_pid_on_port(host, port)
                     try:
                         self.lbl_status.config(text=f"检测到服务器已在运行 ({host}:{port})", fg="orange")
                         self.start_btn.config(text="⏹ 停止服务器")
                     except tk.TclError:
                         pass
-                    self.append_log(f"[系统] 检测到 {host}:{port} 已有服务器在运行。\n")
+                    if pid:
+                        self.update_process_info(True, pid)
+                    self.append_log(f"[系统] 检测到 {host}:{port} 已有服务器在运行" + (f" (PID {pid})" if pid else "") + "。\n")
                 self._safe_after(0, _update_ui)
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -900,14 +950,21 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             pass
         self.update_process_info(False)
 
-    # ====== 系统硬件资源监控 (纯 ctypes 底层直调，0 子进程开销，<1ms 耗时) ======
+    # ====== 系统硬件资源监控 (纯 ctypes 底层直调，支持 N卡 NVML 与 A卡 DXGI+PDH，0 子进程开销，<1ms 耗时) ======
     def _init_sys_monitor(self):
         self._prev_cpu_times = None
         self._nvml = None
+        self._gpu_list = []
         self._gpu_handles = []
         self._gpu_names = []
-        
+        self._pdh = None
+        self._pdh_query = None
+        self._pdh_eng_counter = None
+        self._pdh_mem_counter = None
+
         if os.name == 'nt':
+            # 1. 尝试初始化 NVIDIA NVML
+            nvml_gpus = []
             try:
                 nvml = ctypes.CDLL('nvml.dll')
                 nvml.nvmlInit()
@@ -919,12 +976,137 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                     name_buf = ctypes.create_string_buffer(64)
                     nvml.nvmlDeviceGetName(handle, name_buf, 64)
                     raw_name = name_buf.value.decode('utf-8', errors='ignore')
-                    short_name = raw_name.replace('NVIDIA GeForce ', '').replace('NVIDIA ', '')
+                    short_name = (
+                        raw_name.replace('NVIDIA GeForce ', '')
+                        .replace('NVIDIA ', '')
+                        .replace('(R)', '')
+                        .replace('(TM)', '')
+                        .strip()
+                    )
+                    nvml_gpus.append({
+                        'type': 'nvml',
+                        'name': short_name,
+                        'handle': handle,
+                        'vendor_id': 0x10DE
+                    })
                     self._gpu_handles.append(handle)
-                    self._gpu_names.append(short_name)
                 self._nvml = nvml
             except Exception:
                 self._nvml = None
+
+            # 2. 探测系统物理显卡 (通过 Windows 原生 DXGI，原生支持 AMD A卡 / Intel Arc / N卡)
+            dxgi_gpus = []
+            try:
+                dxgi = ctypes.windll.dxgi
+                class GUID(ctypes.Structure):
+                    _fields_ = [
+                        ("Data1", wintypes.DWORD),
+                        ("Data2", wintypes.WORD),
+                        ("Data3", wintypes.WORD),
+                        ("Data4", wintypes.BYTE * 8)
+                    ]
+                class LUID(ctypes.Structure):
+                    _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+                class DXGI_ADAPTER_DESC1(ctypes.Structure):
+                    _fields_ = [
+                        ("Description", wintypes.WCHAR * 128),
+                        ("VendorId", wintypes.UINT),
+                        ("DeviceId", wintypes.UINT),
+                        ("SubSysId", wintypes.UINT),
+                        ("Revision", wintypes.UINT),
+                        ("DedicatedVideoMemory", ctypes.c_size_t),
+                        ("DedicatedSystemMemory", ctypes.c_size_t),
+                        ("SharedSystemMemory", ctypes.c_size_t),
+                        ("AdapterLuid", LUID),
+                        ("Flags", wintypes.UINT),
+                    ]
+
+                IID_IDXGIFactory1 = GUID(0x770aae78, 0xf26f, 0x4dba, (wintypes.BYTE*8)(0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87))
+                pFactory = ctypes.c_void_p()
+                if dxgi.CreateDXGIFactory1(ctypes.byref(IID_IDXGIFactory1), ctypes.byref(pFactory)) == 0:
+                    f_vtbl = ctypes.cast(pFactory, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+                    EnumAdapters1 = ctypes.WINFUNCTYPE(wintypes.HRESULT, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p))(f_vtbl[12])
+
+                    idx = 0
+                    while True:
+                        pAdapter = ctypes.c_void_p()
+                        if EnumAdapters1(pFactory, idx, ctypes.byref(pAdapter)) != 0:
+                            break
+                        a_vtbl = ctypes.cast(pAdapter, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+                        GetDesc1 = ctypes.WINFUNCTYPE(wintypes.HRESULT, ctypes.c_void_p, ctypes.POINTER(DXGI_ADAPTER_DESC1))(a_vtbl[10])
+                        desc = DXGI_ADAPTER_DESC1()
+                        GetDesc1(pAdapter, ctypes.byref(desc))
+
+                        # 过滤软件适配器 (DXGI_ADAPTER_FLAG_SOFTWARE = 2) 与显存为 0 的设备
+                        if not (desc.Flags & 2) and desc.DedicatedVideoMemory > 0:
+                            luid_str = f"0x{desc.AdapterLuid.HighPart:08x}_0x{desc.AdapterLuid.LowPart:08x}".lower()
+                            raw_desc = desc.Description
+                            clean_name = (
+                                raw_desc.replace('(TM)', '')
+                                .replace('(R)', '')
+                                .replace('AMD Radeon ', '')
+                                .replace('Radeon ', '')
+                                .replace('NVIDIA GeForce ', '')
+                                .replace('NVIDIA ', '')
+                                .replace('Intel Arc ', 'Arc ')
+                                .replace('Intel ', '')
+                                .replace(' Graphics', '')
+                                .strip()
+                            )
+                            dxgi_gpus.append({
+                                'type': 'pdh',
+                                'name': clean_name,
+                                'vendor_id': desc.VendorId,
+                                'total_vram_gb': desc.DedicatedVideoMemory / (1024 ** 3),
+                                'luid_str': luid_str
+                            })
+                        ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)(a_vtbl[2])(pAdapter)
+                        idx += 1
+                    ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)(f_vtbl[2])(pFactory)
+            except Exception:
+                dxgi_gpus = []
+
+            # 过滤核显：若存在独立显存 >= 1GB 的独显，则过滤掉共享显存极小的核显
+            has_dgpu = any(g['total_vram_gb'] >= 1.0 for g in dxgi_gpus)
+            if has_dgpu:
+                dxgi_gpus = [g for g in dxgi_gpus if g['total_vram_gb'] >= 1.0]
+
+            # 3. 整合显卡列表：NVML 管理 N卡，DXGI+PDH 管理 A卡 及非 NVML 显卡
+            final_gpus = []
+            if nvml_gpus:
+                final_gpus.extend(nvml_gpus)
+                for dg in dxgi_gpus:
+                    if dg['vendor_id'] != 0x10DE:
+                        final_gpus.append(dg)
+            else:
+                final_gpus.extend(dxgi_gpus)
+
+            self._gpu_list = final_gpus
+            self._gpu_names = [g['name'] for g in final_gpus]
+
+            # 4. 若存在需要 PDH 监控的显卡（如 A卡），初始化 Windows PDH 性能计数器会话
+            has_pdh = any(g['type'] == 'pdh' for g in final_gpus)
+            if has_pdh:
+                try:
+                    pdh = ctypes.windll.pdh
+                    hQuery = ctypes.c_void_p()
+                    if pdh.PdhOpenQueryW(None, 0, ctypes.byref(hQuery)) == 0:
+                        hEng = ctypes.c_void_p()
+                        hMem = ctypes.c_void_p()
+                        res_eng = pdh.PdhAddEnglishCounterW(hQuery, r"\GPU Engine(*)\Utilization Percentage", 0, ctypes.byref(hEng))
+                        res_mem = pdh.PdhAddEnglishCounterW(hQuery, r"\GPU Adapter Memory(*)\Dedicated Usage", 0, ctypes.byref(hMem))
+                        if res_eng == 0 and res_mem == 0:
+                            self._pdh = pdh
+                            self._pdh_query = hQuery
+                            self._pdh_eng_counter = hEng
+                            self._pdh_mem_counter = hMem
+                            # 预先采集一次基准样本
+                            self._pdh.PdhCollectQueryData(self._pdh_query)
+                        else:
+                            pdh.PdhCloseQuery(hQuery)
+                except Exception:
+                    self._pdh = None
+                    self._pdh_query = None
 
     def _shutdown_sys_monitor(self):
         if self._nvml:
@@ -933,6 +1115,13 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             except Exception:
                 pass
             self._nvml = None
+        if getattr(self, '_pdh_query', None) and getattr(self, '_pdh', None):
+            try:
+                self._pdh.PdhCloseQuery(self._pdh_query)
+            except Exception:
+                pass
+            self._pdh_query = None
+            self._pdh = None
 
     def _get_cpu_pct(self):
         if os.name != 'nt':
@@ -990,23 +1179,78 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 used_gb, total_gb, load_pct = ram_info
                 self.lbl_ram.config(text=f"内存: {used_gb:.1f} GB / {total_gb:.1f} GB ({load_pct}%)")
 
-            # 3. 显卡与显存更新 (支持单卡/多卡，分列精准对齐)
-            if self._nvml and self._gpu_handles and hasattr(self, 'lbl_gpu_cores') and hasattr(self, 'lbl_gpu_mems'):
-                for i, handle in enumerate(self._gpu_handles):
+            # 3. 显卡与显存更新 (支持 N卡 / A卡 / 多卡，分列精准对齐)
+            if self._gpu_list and hasattr(self, 'lbl_gpu_cores') and hasattr(self, 'lbl_gpu_mems'):
+                has_pdh = any(g.get('type') == 'pdh' for g in self._gpu_list)
+                pdh_mem_map = {}
+                pdh_eng_map = {}
+                if has_pdh and getattr(self, '_pdh_query', None) and getattr(self, '_pdh', None):
+                    try:
+                        self._pdh.PdhCollectQueryData(self._pdh_query)
+
+                        # 读取专用显存占用
+                        if getattr(self, '_pdh_mem_counter', None):
+                            dw_buf = wintypes.DWORD(0)
+                            dw_cnt = wintypes.DWORD(0)
+                            self._pdh.PdhGetFormattedCounterArrayW(self._pdh_mem_counter, 0x00000200, ctypes.byref(dw_buf), ctypes.byref(dw_cnt), None)
+                            if dw_buf.value > 0 and dw_cnt.value > 0:
+                                buf_m = (ctypes.c_byte * dw_buf.value)()
+                                self._pdh.PdhGetFormattedCounterArrayW(self._pdh_mem_counter, 0x00000200, ctypes.byref(dw_buf), ctypes.byref(dw_cnt), buf_m)
+                                items_m = ctypes.cast(buf_m, ctypes.POINTER(_PDH_FMT_COUNTERVALUE_ITEM_W))
+                                for j in range(dw_cnt.value):
+                                    it = items_m[j]
+                                    name_low = it.szName.lower()
+                                    for g in self._gpu_list:
+                                        if g.get('type') == 'pdh' and g.get('luid_str') in name_low:
+                                            pdh_mem_map[g['luid_str']] = it.FmtValue.doubleValue
+
+                        # 读取核心负载 (3D 与 Compute 计算引擎利用率聚合)
+                        if getattr(self, '_pdh_eng_counter', None):
+                            dw_buf = wintypes.DWORD(0)
+                            dw_cnt = wintypes.DWORD(0)
+                            self._pdh.PdhGetFormattedCounterArrayW(self._pdh_eng_counter, 0x00000200, ctypes.byref(dw_buf), ctypes.byref(dw_cnt), None)
+                            if dw_buf.value > 0 and dw_cnt.value > 0:
+                                buf_e = (ctypes.c_byte * dw_buf.value)()
+                                self._pdh.PdhGetFormattedCounterArrayW(self._pdh_eng_counter, 0x00000200, ctypes.byref(dw_buf), ctypes.byref(dw_cnt), buf_e)
+                                items_e = ctypes.cast(buf_e, ctypes.POINTER(_PDH_FMT_COUNTERVALUE_ITEM_W))
+                                for j in range(dw_cnt.value):
+                                    it = items_e[j]
+                                    name_low = it.szName.lower()
+                                    if 'engtype_3d' in name_low or 'engtype_compute' in name_low:
+                                        val = it.FmtValue.doubleValue
+                                        for g in self._gpu_list:
+                                            if g.get('type') == 'pdh' and g.get('luid_str') in name_low:
+                                                pdh_eng_map[g['luid_str']] = pdh_eng_map.get(g['luid_str'], 0.0) + val
+                    except Exception:
+                        pass
+
+                for i, g in enumerate(self._gpu_list):
                     if i < len(self.lbl_gpu_cores) and i < len(self.lbl_gpu_mems):
                         try:
-                            mem = _NVMLMemory()
-                            self._nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem))
-                            util = _NVMLUtilization()
-                            self._nvml.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util))
-                            
-                            used_gb = mem.used / (1024 ** 3)
-                            total_gb = mem.total / (1024 ** 3)
-                            vram_pct = (mem.used / mem.total * 100.0) if mem.total > 0 else 0.0
-                            name = self._gpu_names[i]
-                            
+                            name = g.get('name', f'GPU {i}')
+                            gpu_pct = 0.0
+                            used_gb = 0.0
+                            total_gb = g.get('total_vram_gb', 0.0)
+
+                            if g.get('type') == 'nvml' and self._nvml:
+                                handle = g.get('handle')
+                                mem = _NVMLMemory()
+                                self._nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem))
+                                util = _NVMLUtilization()
+                                self._nvml.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util))
+                                used_gb = mem.used / (1024 ** 3)
+                                total_gb = mem.total / (1024 ** 3)
+                                gpu_pct = float(util.gpu)
+                            elif g.get('type') == 'pdh':
+                                luid = g.get('luid_str', '')
+                                used_bytes = pdh_mem_map.get(luid, 0.0)
+                                used_gb = used_bytes / (1024 ** 3)
+                                gpu_pct = min(100.0, pdh_eng_map.get(luid, 0.0))
+
+                            vram_pct = (used_gb / total_gb * 100.0) if total_gb > 0 else 0.0
+
                             self.lbl_gpu_cores[i].config(
-                                text=f"显卡 {i} ({name}): 核心负载 {util.gpu:>2}%"
+                                text=f"显卡 {i} ({name}): 核心负载 {gpu_pct:>4.1f}%"
                             )
                             self.lbl_gpu_mems[i].config(
                                 text=f"显存占用 {used_gb:.1f} GB / {total_gb:.1f} GB ({vram_pct:.1f}%)"
@@ -1167,6 +1411,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 except Exception:
                     pass
             self._running = False
+            self._server_ready = False
             self.append_log("\n[系统] 正在终止服务器进程...")
             try:
                 self.start_btn.config(text="▶ 启动服务器")
@@ -1181,18 +1426,73 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 pass
             self.start_server()
 
+    def _on_server_ready(self):
+        try:
+            self.lbl_status.config(text="运行中 (已就绪)", fg="green")
+        except tk.TclError:
+            pass
+        self.append_log("\n[系统] ✅ 模型已加载完成，HTTP/Web 服务已就绪！\n")
+
     def start_server(self):
+        # 1. 必选参数校验：杜绝无模型启动或无效路径导致以无模型 Router 模式运行
+        model_path = self.vars.get("model", tk.StringVar()).get().strip()
+        if not model_path:
+            messagebox.showerror("缺少必要参数", "未指定模型路径 (-m)！\n请先选择或输入模型 GGUF 文件路径。")
+            self.append_log("[错误] 未指定模型路径 (-m)，启动已取消。\n")
+            return
+        if not os.path.isfile(model_path):
+            messagebox.showerror("文件不存在", f"指定的模型文件不存在：\n{model_path}")
+            self.append_log(f"[错误] 模型文件不存在: {model_path}\n")
+            return
+
         cmd = self.build_command()
+        exe_path = cmd[0]
+        if not os.path.isfile(exe_path):
+            messagebox.showerror("程序未找到", f"在指定的路径下未找到可执行程序：\n{exe_path}\n请检查 llama.cpp 所在目录设置。")
+            self.append_log(f"[错误] 未找到可执行文件: {exe_path}\n")
+            return
+
+        # 2. 端口冲突校验：检测是否有残留服务占用端口，避免新实例静默绑定失败
+        host, port = self._current_host_port()
+        if self.detect_server():
+            pid = self._find_pid_on_port(host, port)
+            pid_str = f" (PID {pid})" if pid else ""
+            if messagebox.askyesno(
+                "端口冲突",
+                f"检测到端口 {port} 当前已被占用{pid_str}！\n\n"
+                f"若继续启动，新服务器将因端口冲突而启动失败，Web 端也将显示残留旧服务或空白。\n"
+                f"是否立即终止占用该端口的残留进程，并启动新模型？"
+            ):
+                if pid:
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(pid)],
+                            capture_output=True,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                        )
+                        time.sleep(0.5)
+                        self.append_log(f"[系统] 已终止占用端口 {port} 的原进程{pid_str}。\n")
+                    except Exception as e:
+                        messagebox.showerror("错误", f"无法终止占用进程: {e}")
+                        return
+                else:
+                    messagebox.showwarning("警告", f"未能定位到占用端口 {port} 的 PID，请手动排查后再启动。")
+                    return
+            else:
+                self.append_log(f"[提示] 用户取消启动，端口 {port} 当前仍被占用。\n")
+                return
 
         self.append_log(f"[系统] 正在执行后台命令:\n{' '.join(cmd)}\n")
         self.append_log("-" * 60 + "\n")
 
         try:
             self.start_btn.config(text="⏹ 停止服务器")
-            self.lbl_status.config(text="运行中", fg="green")
+            self.lbl_status.config(text="加载中...", fg="orange")
         except tk.TclError:
             pass
         self._running = True
+        self._server_ready = False
+        self._external_running = False
         
         threading.Thread(target=self.run_process, args=(cmd,), daemon=True).start()
 
@@ -1230,9 +1530,16 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             self._safe_after(0, self.update_process_info, True, proc.pid)
 
             for line in proc.stdout:
+                if not getattr(self, '_server_ready', False) and any(
+                    k in line.lower() for k in ["listening on", "server is listening", "all slots are idle"]
+                ):
+                    self._server_ready = True
+                    self._safe_after(0, self._on_server_ready)
                 self._safe_after(0, self.append_log, line)
 
             proc.wait()
+            if proc.returncode != 0:
+                self._safe_after(0, self.append_log, f"\n[提示] 服务器进程退出，返回码: {proc.returncode}\n")
             if self._current_proc is proc:
                 self._current_proc = None
                 self._safe_after(0, self.server_stopped)
@@ -1246,6 +1553,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
 
     def server_stopped(self):
         self._running = False
+        self._server_ready = False
         try:
             self.start_btn.config(text="▶ 启动服务器")
             self.lbl_status.config(text="未运行", fg="red")
