@@ -4,6 +4,7 @@ import subprocess
 import threading
 import os
 import json
+import time
 import webbrowser
 import socket
 import ctypes
@@ -38,11 +39,33 @@ class _PDH_FMT_COUNTERVALUE(ctypes.Structure):
 class _PDH_FMT_COUNTERVALUE_ITEM_W(ctypes.Structure):
     _fields_ = [('szName', wintypes.LPWSTR), ('FmtValue', _PDH_FMT_COUNTERVALUE)]
 
+
+# 配置文件中枚举字段的合法值及回退默认值
+_VALID_KV_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
+_VALID_SPEC_TYPES = {
+    "", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash",
+    "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache",
+    "ngram-map-k", "ngram-map-k4v",
+}
+_ENUM_FALLBACKS = {
+    "reasoning":        ({"auto", "on", "off"}, "auto"),
+    "reasoning_format": ({"auto", "none", "deepseek", "deepseek-legacy"}, "auto"),
+    "reasoning_effort": ({"default", "minimal", "low", "medium", "high", "xhigh", "max"}, "default"),
+    "lazy_mode":        ({"", "auto", "on", "off"}, ""),
+    "load_mode":        ({"", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio"}, ""),
+    "ctk":              (set(_VALID_KV_TYPES), "f16"),
+    "ctv":              (set(_VALID_KV_TYPES), "f16"),
+    "draft_ctk":        (set(_VALID_KV_TYPES), ""),
+    "draft_ctv":        (set(_VALID_KV_TYPES), ""),
+    "spec_type":        (_VALID_SPEC_TYPES, ""),
+}
+
+
 class LlamaLauncherApp:
     def __init__(self, root):
         self.root = root
         self.root.title("llama.cpp 启动器")
-        
+
         # 窗口自适应与居中逻辑 (最大 1180x880，小屏幕/高缩放下自适应屏幕高度)
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -51,17 +74,17 @@ class LlamaLauncherApp:
         x = max(0, int((screen_width - window_width) / 2))
         y = max(0, int((screen_height - window_height) / 2))
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
-        
+
         self._running = False
         self._server_ready = False
         self._current_proc = None
         self._external_running = False
         self._is_destroyed = False
-        self.vars = {} # 统一管理所有输入变量
-        
+        self.vars = {}  # 统一管理所有输入变量
+
         # 默认配置文件名
         self.current_config_file = "llama_config.json"
-        
+
         # 初始化系统监控探针 (CPU / 内存 / GPU)
         self._init_sys_monitor()
 
@@ -84,9 +107,9 @@ class LlamaLauncherApp:
         # ====== 布局搭建：Frame + grid 布局 ======
         self.main_container = ttk.Frame(self.root)
         self.main_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        self.main_container.columnconfigure(0, weight=1, uniform="ratio_lock") 
-        self.main_container.columnconfigure(1, weight=1, uniform="ratio_lock") 
+
+        self.main_container.columnconfigure(0, weight=1, uniform="ratio_lock")
+        self.main_container.columnconfigure(1, weight=1, uniform="ratio_lock")
         self.main_container.rowconfigure(0, weight=1)
 
         # ====== 左侧：参数设置区 ======
@@ -95,7 +118,7 @@ class LlamaLauncherApp:
 
         self.canvas = tk.Canvas(self.left_frame_container, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(self.left_frame_container, orient="vertical", command=self.canvas.yview)
-        
+
         # 🟢 修复滚轮穿透：鼠标进入左侧容器时绑定全局滚轮，离开时解绑，解决悬停在输入框/标签时无法滚动的问题
         self.left_frame_container.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._on_mousewheel))
         self.left_frame_container.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
@@ -105,7 +128,7 @@ class LlamaLauncherApp:
         self.left_frame = ttk.Frame(self.canvas)
         self.left_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas_window = self.canvas.create_window((0, 0), window=self.left_frame, anchor="nw")
-        
+
         self.canvas.bind('<Configure>', lambda e: self.canvas.itemconfig(self.canvas_window, width=e.width))
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
@@ -117,7 +140,7 @@ class LlamaLauncherApp:
         # ====== 右侧：控制与日志区 ======
         self.right_frame = ttk.Frame(self.main_container)
         self.right_frame.grid(row=0, column=1, sticky="nsew", padx=(2, 0))
-        
+
         self.build_right_panel()
 
     def _on_mousewheel(self, event):
@@ -146,7 +169,7 @@ class LlamaLauncherApp:
         cb = ttk.Combobox(frame, textvariable=var, values=values, width=20, state="readonly" if readonly else "normal")
         cb.pack(side=tk.LEFT, fill=tk.X, expand=True)
         return cb
-        
+
     def create_check_row(self, parent, label_text, default_val, var_key):
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, padx=5, pady=2)
@@ -156,20 +179,22 @@ class LlamaLauncherApp:
         chk.pack(anchor=tk.W)
         return chk
 
-    def create_file_row(self, parent, label_text, default_val, var_key, filetypes=(("All files", "*.*"),), initial_var_key=None):
+    def create_file_row(self, parent, label_text, default_val, var_key,
+                        filetypes=(("All files", "*.*"),), initial_var_key=None):
+        """生成 文件路径 + 浏览按钮 的行；返回 (entry, browse_button)"""
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, padx=5, pady=2)
         ttk.Label(frame, text=label_text, width=32, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
         var = tk.StringVar(value=default_val)
         self.vars[var_key] = var
-        
+
         entry = ttk.Entry(frame, textvariable=var, width=15)
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        
+
         def browse_file():
             current_path = var.get().strip()
             kwargs = {"filetypes": filetypes}
-            
+
             # 优先使用关联变量（如模型路径）的路径作为初始目录
             if initial_var_key and initial_var_key in self.vars:
                 ref_path = self.vars[initial_var_key].get().strip()
@@ -178,7 +203,7 @@ class LlamaLauncherApp:
                         dir_path = os.path.dirname(ref_path) if os.path.isfile(ref_path) else ref_path
                         if os.path.exists(dir_path):
                             kwargs["initialdir"] = dir_path
-            
+
             # 如果当前字段已有路径，也作为备选
             if not kwargs.get("initialdir") and current_path:
                 if os.path.exists(current_path):
@@ -189,7 +214,7 @@ class LlamaLauncherApp:
                     parent_dir = os.path.dirname(current_path)
                     if os.path.exists(parent_dir):
                         kwargs["initialdir"] = parent_dir
-                        
+
             filepath = filedialog.askopenfilename(**kwargs)
             if filepath:
                 var.set(filepath)
@@ -198,9 +223,10 @@ class LlamaLauncherApp:
                     if alias_var and not alias_var.get().strip():
                         stem = os.path.splitext(os.path.basename(filepath))[0]
                         alias_var.set(stem)
-                
-        ttk.Button(frame, text="浏览...", command=browse_file, width=8).pack(side=tk.LEFT)
-        return entry
+
+        btn = ttk.Button(frame, text="浏览...", command=browse_file, width=8)
+        btn.pack(side=tk.LEFT)
+        return entry, btn
 
     def create_dir_row(self, parent, label_text, default_val, var_key):
         frame = ttk.Frame(parent)
@@ -208,14 +234,14 @@ class LlamaLauncherApp:
         ttk.Label(frame, text=label_text, width=32, anchor=tk.W).pack(side=tk.LEFT, padx=(0, 5))
         var = tk.StringVar(value=default_val)
         self.vars[var_key] = var
-        
+
         entry = ttk.Entry(frame, textvariable=var, width=15)
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        
+
         def browse_dir():
             current_path = var.get().strip()
             kwargs = {}
-            
+
             if current_path:
                 if os.path.isdir(current_path):
                     kwargs["initialdir"] = current_path
@@ -223,20 +249,20 @@ class LlamaLauncherApp:
                     parent_dir = os.path.dirname(current_path)
                     if os.path.exists(parent_dir):
                         kwargs["initialdir"] = parent_dir
-                        
+
             dirpath = filedialog.askdirectory(**kwargs)
             if dirpath:
                 var.set(dirpath)
-                
+
         ttk.Button(frame, text="选择目录...", command=browse_dir, width=8).pack(side=tk.LEFT)
 
     def build_left_panel(self):
         # --- 1. 基础设置 ---
         g_basic = ttk.LabelFrame(self.left_frame, text="基础设置 (必填)")
         g_basic.pack(fill=tk.X, padx=5, pady=5)
-        
+
         self.create_dir_row(g_basic, "llama.cpp 所在目录:", "", "llama_dir")
-        self.create_file_row(g_basic, "模型路径 (-m):", "", "model", 
+        self.create_file_row(g_basic, "模型路径 (-m):", "", "model",
                              filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
         self.create_file_row(g_basic, "多模态投影文件 (--mmproj):", "", "mmproj",
                              filetypes=[("GGUF Projector", "*.gguf"), ("All files", "*.*")],
@@ -252,7 +278,9 @@ class LlamaLauncherApp:
         # --- 2. 模型参数 ---
         g_model = ttk.LabelFrame(self.left_frame, text="模型参数")
         g_model.pack(fill=tk.X, padx=5, pady=5)
-        self.create_combo_row(g_model, "上下文长度 (-c, --ctx-size):", ["16384", "24576", "32768", "65536", "81920", "98304", "131072", "262144"], "16384", "ctx")
+        self.create_combo_row(g_model, "上下文长度 (-c, --ctx-size):",
+                              ["16384", "24576", "32768", "65536", "81920", "98304", "131072", "262144"],
+                              "16384", "ctx")
         self.create_input_row(g_model, "图像最小Tokens (--image-min-tokens):", "", "image_min_tokens")
         # 🟢 新增：图像最大Tokens限制
         self.create_input_row(g_model, "图像最大Tokens (--image-max-tokens):", "", "image_max_tokens")
@@ -267,9 +295,14 @@ class LlamaLauncherApp:
         # --- 3. 推理/思考模式 ---
         g_reason = ttk.LabelFrame(self.left_frame, text="推理/思考模式")
         g_reason.pack(fill=tk.X, padx=5, pady=5)
-        self.create_combo_row(g_reason, "推理模式 (--reasoning):", ["auto", "on", "off"], "auto", "reasoning", readonly=True)
-        self.create_combo_row(g_reason, "思考力度 (--reasoning-effort):", ["default", "minimal", "low", "medium", "high", "xhigh", "max"], "default", "reasoning_effort", readonly=True)
-        self.create_combo_row(g_reason, "思考格式 (--reasoning-format):", ["auto", "none", "deepseek", "deepseek-legacy"], "auto", "reasoning_format", readonly=True)
+        self.create_combo_row(g_reason, "推理模式 (--reasoning):",
+                              ["auto", "on", "off"], "auto", "reasoning", readonly=True)
+        self.create_combo_row(g_reason, "思考力度 (--reasoning-effort):",
+                              ["default", "minimal", "low", "medium", "high", "xhigh", "max"],
+                              "default", "reasoning_effort", readonly=True)
+        self.create_combo_row(g_reason, "思考格式 (--reasoning-format):",
+                              ["auto", "none", "deepseek", "deepseek-legacy"],
+                              "auto", "reasoning_format", readonly=True)
 
         # --- 4. 性能与内存 ---
         g_perf = ttk.LabelFrame(self.left_frame, text="性能与内存")
@@ -277,21 +310,27 @@ class LlamaLauncherApp:
         self.create_input_row(g_perf, "CPU线程数 (-t):", "", "threads")
         self.create_input_row(g_perf, "批处理线程数 (-tb):", "", "threads_batch")
         self.create_combo_row(g_perf, "Flash Attention (-fa):", ["auto", "on", "off"], "auto", "fa", readonly=True)
-        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctk", readonly=True)
-        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):", ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"], "f16", "ctv", readonly=True)
+        self.create_combo_row(g_perf, "KV Cache 类型 K (-ctk):",
+                              ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"],
+                              "f16", "ctk", readonly=True)
+        self.create_combo_row(g_perf, "KV Cache 类型 V (-ctv):",
+                              ["f16", "q8_0", "bf16", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"],
+                              "f16", "ctv", readonly=True)
         # 🟢 KV 缓存优化开关 (默认开启；取消勾选将传 --no-kv-offload)
         self.create_check_row(g_perf, "优化/卸载KV缓存 (-kvo)", True, "kvo")
         # 🟢 新增：缓存块重用 (多轮长对话/RAG首字加速，建议 256 或 512)
         self.create_input_row(g_perf, "缓存块重用 (--cache-reuse):", "", "cache_reuse")
         # 🟢 新版 llama.cpp：统一为 --load-mode
-        self.create_combo_row(g_perf, "加载模式 (-lm, --load-mode):", ["", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio"], "", "load_mode", readonly=True)
+        self.create_combo_row(g_perf, "加载模式 (-lm, --load-mode):",
+                              ["", "auto", "none", "mmap", "mlock", "mmap+mlock", "dio"],
+                              "", "load_mode", readonly=True)
         # 🟢 修正：按需延迟加载 (-lzm, --lazy-mode)，支持大张量/层嵌入按需读盘
-        self.create_combo_row(g_perf, "按需延迟加载 (-lzm, --lazy-mode):", ["", "auto", "on", "off"], "", "lazy_mode", readonly=True)
+        self.create_combo_row(g_perf, "按需延迟加载 (-lzm, --lazy-mode):",
+                              ["", "auto", "on", "off"], "", "lazy_mode", readonly=True)
         self.create_input_row(g_perf, "缓存 RAM 限制 (--cache-ram):", "", "cache_ram")
         # 🟢 新增：不保留主机 RAM 模型副本
         self.create_check_row(g_perf, "不保留主机RAM副本 (--no-host)", False, "no_host")
         self.create_input_row(g_perf, "上下文检查点 (--ctx-checkpoints):", "", "ctx_checkpoints")
-
 
         # --- 5. 请求控制与模板 ---
         g_req = ttk.LabelFrame(self.left_frame, text="请求控制与模板")
@@ -311,20 +350,29 @@ class LlamaLauncherApp:
         # --- 5b. 投机解码 ---
         g_spec = ttk.LabelFrame(self.left_frame, text="投机解码")
         g_spec.pack(fill=tk.X, padx=5, pady=5)
-        self.create_combo_row(g_spec, "投机解码类型 (--spec-type):", ["", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache", "ngram-map-k", "ngram-map-k4v"], "", "spec_type", readonly=True)
-        
-        entry_draft_model = self.create_file_row(g_spec, "草稿模型路径 (--model-draft):", "", "draft_model",
-                             filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
+        self.create_combo_row(g_spec, "投机解码类型 (--spec-type):",
+                              ["", "draft-simple", "draft-mtp", "draft-eagle3", "draft-dflash",
+                               "draft-dspark", "ngram-simple", "ngram-mod", "ngram-cache",
+                               "ngram-map-k", "ngram-map-k4v"],
+                              "", "spec_type", readonly=True)
+
+        entry_draft_model, btn_draft_model = self.create_file_row(
+            g_spec, "草稿模型路径 (--model-draft):", "", "draft_model",
+            filetypes=[("GGUF Model", "*.gguf"), ("All files", "*.*")])
         entry_draft_max = self.create_input_row(g_spec, "草稿最大Tokens (--spec-draft-n-max):", "", "draft_max")
         entry_draft_min = self.create_input_row(g_spec, "草稿最小Tokens (--spec-draft-n-min):", "", "draft_min")
         # 🟢 新增：极关键的投机解码置信度门限（防止吞吐雪崩）及草稿KV缓存类型
         entry_draft_p_min = self.create_input_row(g_spec, "草稿最小概率 (--spec-draft-p-min):", "", "draft_p_min")
-        combo_draft_ctk = self.create_combo_row(g_spec, "草稿K缓存类型 (-ctkd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctk", readonly=True)
-        combo_draft_ctv = self.create_combo_row(g_spec, "草稿V缓存类型 (-ctvd):", ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"], "", "draft_ctv", readonly=True)
+        combo_draft_ctk = self.create_combo_row(g_spec, "草稿K缓存类型 (-ctkd):",
+                                                ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"],
+                                                "", "draft_ctk", readonly=True)
+        combo_draft_ctv = self.create_combo_row(g_spec, "草稿V缓存类型 (-ctvd):",
+                                                ["", "f16", "q8_0", "bf16", "q4_0", "q4_1", "iq4_nl"],
+                                                "", "draft_ctv", readonly=True)
 
         # 智能控件联动：区分外挂草稿模型类 vs 内置MTP vs N-gram
-        self._ext_draft_entries = [entry_draft_model, combo_draft_ctk, combo_draft_ctv]
-        self._ext_draft_frames = [entry_draft_model.master, combo_draft_ctk.master, combo_draft_ctv.master]
+        # 显式保存相关控件引用，避免遍历控件树带来的脆弱性
+        self._ext_draft_widgets = [entry_draft_model, btn_draft_model, combo_draft_ctk, combo_draft_ctv]
         self._general_spec_entries = [entry_draft_max, entry_draft_min, entry_draft_p_min]
 
         def _update_draft_state(*_):
@@ -332,28 +380,21 @@ class LlamaLauncherApp:
             is_active = bool(spec)
             # 只有需要外挂草稿模型时才启用模型路径及草稿KV量化（draft-mtp 与 ngram 不需要独立模型文件）
             is_ext_draft = is_active and ("draft" in spec) and (spec != "draft-mtp")
-            
+
             # 通用投机参数（步长、门限）：只要开启投机解码即启用
-            for ent in self._general_spec_entries:
+            for w in self._general_spec_entries:
                 try:
-                    ent.configure(state="normal" if is_active else "disabled")
+                    w.configure(state="normal" if is_active else "disabled")
                 except tk.TclError:
                     pass
-            
+
             # 外部独立草稿模型参数
             ext_state = "normal" if is_ext_draft else "disabled"
-            for ent in self._ext_draft_entries:
+            for w in self._ext_draft_widgets:
                 try:
-                    ent.configure(state=ext_state)
+                    w.configure(state=ext_state)
                 except tk.TclError:
                     pass
-            for frm in self._ext_draft_frames:
-                for child in frm.winfo_children():
-                    if isinstance(child, ttk.Button):
-                        try:
-                            child.configure(state=ext_state)
-                        except tk.TclError:
-                            pass
 
         self.vars["spec_type"].trace_add("write", _update_draft_state)
         self.root.after(100, _update_draft_state)
@@ -386,7 +427,7 @@ class LlamaLauncherApp:
     def build_right_panel(self):
         top_frame = ttk.Frame(self.right_frame)
         top_frame.pack(fill=tk.X, padx=5, pady=(10, 5))
-        
+
         self.start_btn = ttk.Button(top_frame, text="▶ 启动服务器", command=self.toggle_server)
         self.start_btn.pack(side=tk.LEFT, padx=(0, 2))
 
@@ -398,20 +439,23 @@ class LlamaLauncherApp:
 
         status_header_frame = ttk.Frame(self.right_frame)
         status_header_frame.pack(fill=tk.X, padx=5, pady=(8, 0))
-        
+
         ttk.Label(status_header_frame, text="服务器状态").pack(side=tk.LEFT)
-        self.lbl_config = ttk.Label(status_header_frame, text=f"当前配置: {os.path.basename(self.current_config_file)}", foreground="blue")
+        self.lbl_config = ttk.Label(status_header_frame,
+                                    text=f"当前配置: {os.path.basename(self.current_config_file)}",
+                                    foreground="blue")
         self.lbl_config.pack(side=tk.RIGHT)
 
         status_info_frame = ttk.Frame(self.right_frame)
         status_info_frame.pack(fill=tk.X, padx=5, pady=(1, 3))
-        self.lbl_status = tk.Label(status_info_frame, text="未运行", fg="red", font=("Microsoft YaHei", 10, "bold"))
+        self.lbl_status = tk.Label(status_info_frame, text="未运行", fg="red",
+                                   font=("Microsoft YaHei", 10, "bold"))
         self.lbl_status.pack(side=tk.LEFT)
         self.lbl_run_status = ttk.Label(status_info_frame, text="运行状态: 否")
         self.lbl_run_status.pack(side=tk.LEFT, padx=(15, 0))
         self.lbl_pid = ttk.Label(status_info_frame, text="进程号 (PID): -")
         self.lbl_pid.pack(side=tk.LEFT, padx=(15, 0))
-        
+
         ttk.Separator(self.right_frame, orient='horizontal').pack(fill=tk.X, padx=5, pady=2)
 
         # ====== 系统硬件资源监控区 ======
@@ -438,7 +482,8 @@ class LlamaLauncherApp:
         if self._gpu_names:
             for i, name in enumerate(self._gpu_names):
                 row_idx = i + 1
-                lbl_core = ttk.Label(sys_frame, text=f"显卡 {i} ({name}): 核心负载 -- %", font=("Microsoft YaHei", 9))
+                lbl_core = ttk.Label(sys_frame, text=f"显卡 {i} ({name}): 核心负载 -- %",
+                                     font=("Microsoft YaHei", 9))
                 lbl_core.grid(row=row_idx, column=0, padx=(8, 4), pady=2, sticky="w")
 
                 sep_gpu = ttk.Label(sys_frame, text="│", foreground="#888888", font=("Microsoft YaHei", 9))
@@ -450,7 +495,9 @@ class LlamaLauncherApp:
                 self.lbl_gpu_cores.append(lbl_core)
                 self.lbl_gpu_mems.append(lbl_mem)
         else:
-            lbl_nogpu = ttk.Label(sys_frame, text="独立显卡: 未检测到独立显卡 (N卡/A卡) 或驱动未就绪", font=("Microsoft YaHei", 9), foreground="gray")
+            lbl_nogpu = ttk.Label(sys_frame,
+                                  text="独立显卡: 未检测到独立显卡 (N卡/A卡) 或驱动未就绪",
+                                  font=("Microsoft YaHei", 9), foreground="gray")
             lbl_nogpu.grid(row=1, column=0, columnspan=3, padx=(8, 4), pady=2, sticky="w")
 
         ttk.Separator(self.right_frame, orient='horizontal').pack(fill=tk.X, padx=5, pady=2)
@@ -466,7 +513,8 @@ class LlamaLauncherApp:
 
         bottom_frame = ttk.Frame(self.right_frame)
         bottom_frame.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Button(bottom_frame, text="清空日志", command=lambda: self.log_text.delete(1.0, tk.END)).pack(side=tk.LEFT)
+        ttk.Button(bottom_frame, text="清空日志",
+                   command=lambda: self.log_text.delete(1.0, tk.END)).pack(side=tk.LEFT)
 
     def open_help_doc(self):
         """以内部窗口的形式弹出帮助文档"""
@@ -475,7 +523,7 @@ class LlamaLauncherApp:
         help_win.geometry("700x750")
         help_win.transient(self.root)
         help_win.grab_set()
-        
+
         x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 350
         y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 375
         help_win.geometry(f"+{x}+{y}")
@@ -483,7 +531,7 @@ class LlamaLauncherApp:
         txt = tk.Text(help_win, font=("Microsoft YaHei", 10), padx=15, pady=15, wrap=tk.WORD, bg="#f9f9f9")
         scrollbar = ttk.Scrollbar(help_win, command=txt.yview)
         txt.configure(yscrollcommand=scrollbar.set)
-        
+
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -551,13 +599,13 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         host, port = self._current_host_port()
         url = f"http://{host}:{port}"
         if not self.detect_server():
-            if self._running and not getattr(self, '_server_ready', False):
+            if self._running and not self._server_ready:
                 messagebox.showinfo("提示", "模型权重正在加载中，HTTP/Web 服务尚未就绪，请稍候片刻再打开控制台。")
             else:
                 messagebox.showinfo("提示", f"服务未在运行 ({host}:{port})。\n请先启动模型服务器。")
             return
         try:
-            webbrowser.open(url)
+            webbrowser.open(url, new=2)
             self.append_log(f"\n[系统] 正在浏览器中尝试打开 WebUI: {url}\n")
         except Exception as e:
             self.append_log(f"\n[错误] 无法打开浏览器: {str(e)}\n")
@@ -592,13 +640,13 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             initialfile=os.path.basename(self.current_config_file) if self.current_config_file else "llama_config.json",
             filetypes=[("JSON 配置文件", "*.json"), ("所有文件", "*.*")]
         )
-        
+
         if filepath:
             config_data = {k: v.get() for k, v in self.vars.items()}
             try:
                 with open(filepath, "w", encoding="utf-8") as f:
                     json.dump(config_data, f, indent=4)
-                
+
                 self.current_config_file = filepath
                 self.lbl_config.config(text=f"当前配置: {os.path.basename(filepath)}")
                 messagebox.showinfo("成功", f"配置已成功保存至：\n{os.path.basename(filepath)}")
@@ -614,7 +662,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     config_data = json.load(f)
-                
+
                 # 兼容旧版配置迁移：no_mmap/mlock 布尔开关 -> load_mode
                 if "load_mode" in self.vars:
                     _valid_lm = ("auto", "none", "mmap", "mlock", "mmap+mlock", "dio")
@@ -633,8 +681,6 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                             elif _no_mmap:
                                 self.vars["load_mode"].set("none")
 
-                VALID_KV_TYPES = ("f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
-
                 for k, v in config_data.items():
                     if k == "load_mode":
                         continue
@@ -643,32 +689,25 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                         if v in ("auto", "on", "off"):
                             self.vars["lazy_mode"].set(v)
                         continue
-                    if k in self.vars:
-                        var = self.vars[k]
-                        if isinstance(var, tk.BooleanVar):
-                            if isinstance(v, bool):
-                                var.set(v)
-                            else:
-                                var.set(str(v).strip().lower() in ("1", "true", "yes", "on"))
-                        else:
-                            if k == "reasoning" and v not in ["auto", "on", "off"]:
-                                v = "auto"
-                            if k == "reasoning_format" and v not in ["auto", "none", "deepseek", "deepseek-legacy"]:
-                                v = "auto"
-                            if k in ("ctk", "ctv"):
-                                if v not in VALID_KV_TYPES:
-                                    v = "f16"
-                            if k in ("draft_ctk", "draft_ctv"):
-                                if v and v not in VALID_KV_TYPES:
-                                    v = ""
-                            if k == "lazy_mode" and v not in ["", "auto", "on", "off"]:
-                                v = ""
-                            if k == "reasoning_effort" and v not in ["default", "minimal", "low", "medium", "high", "xhigh", "max"]:
-                                v = "default"
-                            if k == "spec_type" and v == "none":
-                                v = ""
+                    if k not in self.vars:
+                        continue
+
+                    var = self.vars[k]
+                    if isinstance(var, tk.BooleanVar):
+                        if isinstance(v, bool):
                             var.set(v)
-                
+                        else:
+                            var.set(str(v).strip().lower() in ("1", "true", "yes", "on"))
+                    else:
+                        # 枚举字段的合法性与回退值通过表驱动处理
+                        if k == "spec_type" and v == "none":
+                            v = ""
+                        elif k in _ENUM_FALLBACKS:
+                            valid, fallback = _ENUM_FALLBACKS[k]
+                            if not isinstance(v, str) or v not in valid:
+                                v = fallback
+                        var.set(v)
+
                 self.current_config_file = filepath
                 if hasattr(self, 'lbl_config'):
                     self.lbl_config.config(text=f"当前配置: {os.path.basename(filepath)}")
@@ -682,7 +721,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         llama_dir = self.vars.get("llama_dir").get().strip()
         if not llama_dir:
             llama_dir = "."
-            
+
         # 智能适配可执行文件：优先选用专用的 llama-server，杜绝传非法子命令
         if os.path.isfile(llama_dir):
             server_exe = os.path.abspath(llama_dir)
@@ -703,8 +742,11 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 else:
                     server_exe = os.path.join(llama_dir, server_bin_name)
                     cmd = [server_exe]
-            
+
+        # 参数映射表: (变量名, 命令行标志, 是否布尔开关)
+        # 按功能分组，便于对照 llama.cpp --help 增删
         mappings = [
+            # --- 基础设置 ---
             ("model", "-m", False),
             ("mmproj", "--mmproj", False),
             ("no_mmproj_offload", "--no-mmproj-offload", True),
@@ -714,30 +756,35 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             ("image_max_tokens", "--image-max-tokens", False),
             ("host", "--host", False),
             ("port", "--port", False),
+            # --- 模型参数 ---
             ("ctx", "-c", False),
             ("no_context_shift", "--no-context-shift", True),
-            ("threads", "-t", False), 
-            ("threads_batch", "-tb", False), 
-            ("fa", "-fa", False),
-            ("ctk", "-ctk", False),
-            ("ctv", "-ctv", False),
             ("ngl", "-ngl", False),
             ("ncmoe", "-ncmoe", False),
             ("b", "-b", False),
             ("ub", "-ub", False),
-            ("np", "-np", False),
-            ("sleep_idle_seconds", "--sleep-idle-seconds", False),
-            ("embedding", "--embedding", True),
-            ("reranking", "--reranking", True),
+            # --- 性能与内存 ---
+            ("threads", "-t", False),
+            ("threads_batch", "-tb", False),
+            ("fa", "-fa", False),
+            ("ctk", "-ctk", False),
+            ("ctv", "-ctv", False),
             ("cache_reuse", "--cache-reuse", False),
             ("load_mode", "--load-mode", False),
             ("lazy_mode", "--lazy-mode", False),
             ("cache_ram", "--cache-ram", False),
             ("no_host", "--no-host", True),
             ("ctx_checkpoints", "--ctx-checkpoints", False),
+            # --- 请求控制 ---
+            ("np", "-np", False),
+            ("sleep_idle_seconds", "--sleep-idle-seconds", False),
+            ("embedding", "--embedding", True),
+            ("reranking", "--reranking", True),
+            # --- 推理/思考 ---
             ("reasoning", "--reasoning", False),
             ("reasoning_effort", "--reasoning-effort", False),
             ("reasoning_format", "--reasoning-format", False),
+            # --- 采样设置 ---
             ("n_predict", "-n", False),
             ("temp", "--temp", False),
             ("top_p", "--top-p", False),
@@ -745,6 +792,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             ("min_p", "--min-p", False),
             ("presence_penalty", "--presence-penalty", False),
             ("frequency_penalty", "--frequency-penalty", False),
+            # --- 高级采样 ---
             ("repeat_penalty", "--repeat-penalty", False),
             ("repeat_last_n", "--repeat-last-n", False),
             ("dry_multiplier", "--dry-multiplier", False),
@@ -752,9 +800,11 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             ("xtc_threshold", "--xtc-threshold", False),
             ("xtc_probability", "--xtc-probability", False),
             ("seed", "-s", False),
+            # --- 模板 ---
             ("chat_template_file", "--chat-template-file", False),
             ("chat_template", "--chat-template", False),
             ("kwargs", "--chat-template-kwargs", False),
+            # --- 投机解码 ---
             ("spec_type", "--spec-type", False),
             ("draft_model", "--model-draft", False),
             ("draft_max", "--spec-draft-n-max", False),
@@ -771,8 +821,9 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         _has_mmproj = bool(self.vars.get("mmproj", tk.StringVar()).get().strip())
 
         for var_key, flag, is_boolean in mappings:
-            if var_key not in self.vars: continue
-            
+            if var_key not in self.vars:
+                continue
+
             # 视觉 CPU 卸载过滤：未选择多模态文件时不传
             if var_key == "no_mmproj_offload" and not _has_mmproj:
                 continue
@@ -787,17 +838,19 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
 
             val = self.vars[var_key].get()
             if is_boolean:
-                if val:  
+                if val:
                     cmd.append(flag)
             else:
-                if not isinstance(val, str): continue
+                if not isinstance(val, str):
+                    continue
                 val = val.strip()
                 # 🟢 模型别名自动回退：若用户未显式指定 alias，则默认使用模型文件名（去除.gguf），避免 Web 端/第三方客户端解析异常或空白
                 if var_key == "alias" and not val:
                     model_path = self.vars.get("model", tk.StringVar()).get().strip()
                     if model_path:
                         val = os.path.splitext(os.path.basename(model_path))[0]
-                if not val: continue
+                if not val:
+                    continue
                 # reasoning_effort 为 default 时不显式传参
                 if var_key == "reasoning_effort" and val == "default":
                     continue
@@ -820,7 +873,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         cmd_list = self.build_command()
         exe_path = cmd_list[0]
         work_dir = os.path.dirname(os.path.abspath(exe_path)) if os.path.exists(exe_path) else ""
-        
+
         # BAT 特殊字符处理
         _bat_special = set(' &|<>()^!;=,')
         safe_cmd = []
@@ -836,7 +889,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         if work_dir:
             script_content += f'cd /d "{work_dir}"\n\n'
         script_content += " ".join(safe_cmd) + "\n\npause"
-        
+
         base_name = os.path.splitext(os.path.basename(self.current_config_file))[0] if self.current_config_file else "server"
         default_bat_name = f"start_server_{base_name}.bat"
         initial_dir = os.path.dirname(os.path.abspath(self.current_config_file)) if self.current_config_file else "."
@@ -848,7 +901,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             defaultextension=".bat",
             filetypes=[("BAT 批处理脚本", "*.bat"), ("所有文件", "*.*")]
         )
-        
+
         if filepath:
             try:
                 with open(filepath, "w", encoding="utf-8-sig") as f:
@@ -868,7 +921,8 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
     def detect_server(self):
         host, port = self._current_host_port()
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.15)
+        # 0.3 秒足够局域网本地回环响应，避免高负载机器上短暂误判
+        s.settimeout(0.3)
         try:
             return s.connect_ex((host, int(port))) == 0
         except (OSError, ValueError):
@@ -883,11 +937,12 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         def _worker():
             if self.detect_server():
                 self._external_running = True
+
                 def _update_ui():
                     if getattr(self, '_is_destroyed', False):
                         return
                     host, port = self._current_host_port()
-                    pid = self._find_pid_on_port(host, port)
+                    pid = self._find_pid_on_port(port)
                     try:
                         self.lbl_status.config(text=f"检测到服务器已在运行 ({host}:{port})", fg="orange")
                         self.start_btn.config(text="⏹ 停止服务器")
@@ -895,11 +950,14 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                         pass
                     if pid:
                         self.update_process_info(True, pid)
-                    self.append_log(f"[系统] 检测到 {host}:{port} 已有服务器在运行" + (f" (PID {pid})" if pid else "") + "。\n")
+                    self.append_log(
+                        f"[系统] 检测到 {host}:{port} 已有服务器在运行"
+                        + (f" (PID {pid})" if pid else "") + "。\n"
+                    )
                 self._safe_after(0, _update_ui)
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _find_pid_on_port(self, host, port):
+    def _find_pid_on_port(self, port):
         if os.name != 'nt':
             return None
         try:
@@ -920,28 +978,56 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             pass
         return None
 
+    def _kill_pid_tree(self, pid):
+        """强制终止指定 PID 及其子进程树，返回是否成功。"""
+        if not pid:
+            return False
+        try:
+            if os.name == 'nt':
+                r = subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                return r.returncode == 0
+            else:
+                os.kill(pid, 15)
+                return True
+        except Exception:
+            return False
+
+    def _kill_internal_proc(self):
+        """终止本程序启动的服务器进程树，返回是否成功。"""
+        proc = self._current_proc
+        if not proc:
+            return False
+        try:
+            if os.name == 'nt' and proc.pid:
+                return self._kill_pid_tree(proc.pid)
+            else:
+                proc.terminate()
+                return True
+        except Exception:
+            return False
+
     def stop_external_server(self):
         host, port = self._current_host_port()
-        pid = self._find_pid_on_port(host, port)
+        pid = self._find_pid_on_port(port)
         if pid:
             if not messagebox.askyesno("确认", f"检测到端口 {port} 被 PID {pid} 占用。\n确定要终止该进程及子进程吗？"):
                 return
-            try:
-                kill = subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    capture_output=True, text=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                )
-                if kill.returncode == 0:
-                    self.append_log(f"[系统] 已终止外部服务器进程 (PID {pid}) 及其进程树。\n")
-                else:
-                    self.append_log(f"[错误] 终止进程 (PID {pid}) 失败: {kill.stderr.strip() or '返回码 ' + str(kill.returncode)}\n")
-            except Exception as e:
-                self.append_log(f"[错误] 无法终止外部服务器: {str(e)}\n")
+            if self._kill_pid_tree(pid):
+                self.append_log(f"[系统] 已终止外部服务器进程 (PID {pid}) 及其进程树。\n")
+            else:
+                self.append_log(f"[错误] 终止进程 (PID {pid}) 失败，状态未重置。\n")
+                messagebox.showerror("终止失败", f"无法终止进程 (PID {pid})。\n请手动处理后再试。")
+                return
         else:
             if not messagebox.askyesno("确认", f"未定位到端口 {port} 的监听进程。\n是否重置界面状态？"):
                 return
             self.append_log("[系统] 未能定位到监听该端口的进程，已重置状态。\n")
+
+        # 仅在成功终止（或无占用）时，才重置外部运行状态
         self._external_running = False
         try:
             self.lbl_status.config(text="未运行", fg="red")
@@ -965,9 +1051,12 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         if os.name == 'nt':
             # 1. 尝试初始化 NVIDIA NVML
             nvml_gpus = []
+            nvml = None
+            nvml_inited = False
             try:
                 nvml = ctypes.CDLL('nvml.dll')
                 nvml.nvmlInit()
+                nvml_inited = True
                 count = ctypes.c_uint()
                 nvml.nvmlDeviceGetCount_v2(ctypes.byref(count))
                 for i in range(count.value):
@@ -992,12 +1081,19 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                     self._gpu_handles.append(handle)
                 self._nvml = nvml
             except Exception:
+                # 初始化过程中失败：若 nvmlInit 已成功，必须成对调用 nvmlShutdown 释放句柄
+                if nvml_inited and nvml is not None:
+                    try:
+                        nvml.nvmlShutdown()
+                    except Exception:
+                        pass
                 self._nvml = None
 
             # 2. 探测系统物理显卡 (通过 Windows 原生 DXGI，原生支持 AMD A卡 / Intel Arc / N卡)
             dxgi_gpus = []
             try:
                 dxgi = ctypes.windll.dxgi
+
                 class GUID(ctypes.Structure):
                     _fields_ = [
                         ("Data1", wintypes.DWORD),
@@ -1005,8 +1101,10 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                         ("Data3", wintypes.WORD),
                         ("Data4", wintypes.BYTE * 8)
                     ]
+
                 class LUID(ctypes.Structure):
                     _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
                 class DXGI_ADAPTER_DESC1(ctypes.Structure):
                     _fields_ = [
                         ("Description", wintypes.WCHAR * 128),
@@ -1021,11 +1119,15 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                         ("Flags", wintypes.UINT),
                     ]
 
-                IID_IDXGIFactory1 = GUID(0x770aae78, 0xf26f, 0x4dba, (wintypes.BYTE*8)(0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87))
+                IID_IDXGIFactory1 = GUID(0x770aae78, 0xf26f, 0x4dba,
+                                         (wintypes.BYTE * 8)(0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87))
                 pFactory = ctypes.c_void_p()
                 if dxgi.CreateDXGIFactory1(ctypes.byref(IID_IDXGIFactory1), ctypes.byref(pFactory)) == 0:
                     f_vtbl = ctypes.cast(pFactory, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
-                    EnumAdapters1 = ctypes.WINFUNCTYPE(wintypes.HRESULT, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p))(f_vtbl[12])
+                    EnumAdapters1 = ctypes.WINFUNCTYPE(
+                        wintypes.HRESULT, ctypes.c_void_p, wintypes.UINT,
+                        ctypes.POINTER(ctypes.c_void_p)
+                    )(f_vtbl[12])
 
                     idx = 0
                     while True:
@@ -1033,7 +1135,10 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                         if EnumAdapters1(pFactory, idx, ctypes.byref(pAdapter)) != 0:
                             break
                         a_vtbl = ctypes.cast(pAdapter, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
-                        GetDesc1 = ctypes.WINFUNCTYPE(wintypes.HRESULT, ctypes.c_void_p, ctypes.POINTER(DXGI_ADAPTER_DESC1))(a_vtbl[10])
+                        GetDesc1 = ctypes.WINFUNCTYPE(
+                            wintypes.HRESULT, ctypes.c_void_p,
+                            ctypes.POINTER(DXGI_ADAPTER_DESC1)
+                        )(a_vtbl[10])
                         desc = DXGI_ADAPTER_DESC1()
                         GetDesc1(pAdapter, ctypes.byref(desc))
 
@@ -1087,26 +1192,40 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             # 4. 若存在需要 PDH 监控的显卡（如 A卡），初始化 Windows PDH 性能计数器会话
             has_pdh = any(g['type'] == 'pdh' for g in final_gpus)
             if has_pdh:
+                hQuery = ctypes.c_void_p()
                 try:
                     pdh = ctypes.windll.pdh
-                    hQuery = ctypes.c_void_p()
                     if pdh.PdhOpenQueryW(None, 0, ctypes.byref(hQuery)) == 0:
                         hEng = ctypes.c_void_p()
                         hMem = ctypes.c_void_p()
-                        res_eng = pdh.PdhAddEnglishCounterW(hQuery, r"\GPU Engine(*)\Utilization Percentage", 0, ctypes.byref(hEng))
-                        res_mem = pdh.PdhAddEnglishCounterW(hQuery, r"\GPU Adapter Memory(*)\Dedicated Usage", 0, ctypes.byref(hMem))
+                        res_eng = pdh.PdhAddEnglishCounterW(
+                            hQuery, r"\GPU Engine(*)\Utilization Percentage", 0, ctypes.byref(hEng))
+                        res_mem = pdh.PdhAddEnglishCounterW(
+                            hQuery, r"\GPU Adapter Memory(*)\Dedicated Usage", 0, ctypes.byref(hMem))
                         if res_eng == 0 and res_mem == 0:
                             self._pdh = pdh
                             self._pdh_query = hQuery
                             self._pdh_eng_counter = hEng
                             self._pdh_mem_counter = hMem
+                            # 所有权已转移给实例，后续由 _shutdown_sys_monitor 管理
+                            hQuery = ctypes.c_void_p()
                             # 预先采集一次基准样本
                             self._pdh.PdhCollectQueryData(self._pdh_query)
                         else:
                             pdh.PdhCloseQuery(hQuery)
+                            hQuery = ctypes.c_void_p()
                 except Exception:
-                    self._pdh = None
-                    self._pdh_query = None
+                    pass
+                finally:
+                    # 兜底关闭仍持有所有权的查询句柄，防止异常路径泄漏
+                    if hQuery.value:
+                        try:
+                            ctypes.windll.pdh.PdhCloseQuery(hQuery)
+                        except Exception:
+                            pass
+                    self._pdh = None if not self._pdh_query else self._pdh
+                    if not self._pdh_query:
+                        self._pdh = None
 
     def _shutdown_sys_monitor(self):
         if self._nvml:
@@ -1132,7 +1251,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             i_val = (idle.dwHighDateTime << 32) | idle.dwLowDateTime
             k_val = (kernel.dwHighDateTime << 32) | kernel.dwLowDateTime
             u_val = (user.dwHighDateTime << 32) | user.dwLowDateTime
-            
+
             if self._prev_cpu_times:
                 prev_i, prev_k, prev_u = self._prev_cpu_times
                 delta_i = i_val - prev_i
@@ -1170,17 +1289,17 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         try:
             # 1. 处理器负载更新
             cpu_pct = self._get_cpu_pct()
-            if cpu_pct is not None and hasattr(self, 'lbl_cpu'):
+            if cpu_pct is not None:
                 self.lbl_cpu.config(text=f"CPU: {cpu_pct:>4.1f}%")
 
             # 2. 系统内存更新
             ram_info = self._get_ram_info()
-            if ram_info and hasattr(self, 'lbl_ram'):
+            if ram_info:
                 used_gb, total_gb, load_pct = ram_info
                 self.lbl_ram.config(text=f"内存: {used_gb:.1f} GB / {total_gb:.1f} GB ({load_pct}%)")
 
             # 3. 显卡与显存更新 (支持 N卡 / A卡 / 多卡，分列精准对齐)
-            if self._gpu_list and hasattr(self, 'lbl_gpu_cores') and hasattr(self, 'lbl_gpu_mems'):
+            if self._gpu_list:
                 has_pdh = any(g.get('type') == 'pdh' for g in self._gpu_list)
                 pdh_mem_map = {}
                 pdh_eng_map = {}
@@ -1192,10 +1311,14 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                         if getattr(self, '_pdh_mem_counter', None):
                             dw_buf = wintypes.DWORD(0)
                             dw_cnt = wintypes.DWORD(0)
-                            self._pdh.PdhGetFormattedCounterArrayW(self._pdh_mem_counter, 0x00000200, ctypes.byref(dw_buf), ctypes.byref(dw_cnt), None)
+                            self._pdh.PdhGetFormattedCounterArrayW(
+                                self._pdh_mem_counter, 0x00000200,
+                                ctypes.byref(dw_buf), ctypes.byref(dw_cnt), None)
                             if dw_buf.value > 0 and dw_cnt.value > 0:
                                 buf_m = (ctypes.c_byte * dw_buf.value)()
-                                self._pdh.PdhGetFormattedCounterArrayW(self._pdh_mem_counter, 0x00000200, ctypes.byref(dw_buf), ctypes.byref(dw_cnt), buf_m)
+                                self._pdh.PdhGetFormattedCounterArrayW(
+                                    self._pdh_mem_counter, 0x00000200,
+                                    ctypes.byref(dw_buf), ctypes.byref(dw_cnt), buf_m)
                                 items_m = ctypes.cast(buf_m, ctypes.POINTER(_PDH_FMT_COUNTERVALUE_ITEM_W))
                                 for j in range(dw_cnt.value):
                                     it = items_m[j]
@@ -1208,10 +1331,14 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                         if getattr(self, '_pdh_eng_counter', None):
                             dw_buf = wintypes.DWORD(0)
                             dw_cnt = wintypes.DWORD(0)
-                            self._pdh.PdhGetFormattedCounterArrayW(self._pdh_eng_counter, 0x00000200, ctypes.byref(dw_buf), ctypes.byref(dw_cnt), None)
+                            self._pdh.PdhGetFormattedCounterArrayW(
+                                self._pdh_eng_counter, 0x00000200,
+                                ctypes.byref(dw_buf), ctypes.byref(dw_cnt), None)
                             if dw_buf.value > 0 and dw_cnt.value > 0:
                                 buf_e = (ctypes.c_byte * dw_buf.value)()
-                                self._pdh.PdhGetFormattedCounterArrayW(self._pdh_eng_counter, 0x00000200, ctypes.byref(dw_buf), ctypes.byref(dw_cnt), buf_e)
+                                self._pdh.PdhGetFormattedCounterArrayW(
+                                    self._pdh_eng_counter, 0x00000200,
+                                    ctypes.byref(dw_buf), ctypes.byref(dw_cnt), buf_e)
                                 items_e = ctypes.cast(buf_e, ctypes.POINTER(_PDH_FMT_COUNTERVALUE_ITEM_W))
                                 for j in range(dw_cnt.value):
                                     it = items_e[j]
@@ -1294,7 +1421,8 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         main_f = ttk.Frame(dialog, padding=(22, 18, 22, 18))
         main_f.pack(fill=tk.BOTH, expand=True)
 
-        lbl_title = ttk.Label(main_f, text="⚠️  本地模型服务器正在运行", font=("Microsoft YaHei", 11, "bold"), foreground="#c05621")
+        lbl_title = ttk.Label(main_f, text="⚠️  本地模型服务器正在运行",
+                              font=("Microsoft YaHei", 11, "bold"), foreground="#c05621")
         lbl_title.pack(anchor="w", pady=(0, 10))
 
         pid_info = f" (PID: {pid})" if pid else ""
@@ -1305,7 +1433,8 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             f"• 【关闭本地模型】：终止模型服务进程并释放显存/内存后退出。\n"
             f"• 【留驻后台】：保持模型服务在后台继续运行，仅退出启动器窗口。"
         )
-        lbl_desc = ttk.Label(main_f, text=desc_msg, font=("Microsoft YaHei", 9), justify=tk.LEFT, wraplength=450)
+        lbl_desc = ttk.Label(main_f, text=desc_msg, font=("Microsoft YaHei", 9),
+                             justify=tk.LEFT, wraplength=450)
         lbl_desc.pack(anchor="w", fill=tk.X, expand=True)
 
         btn_f = ttk.Frame(main_f)
@@ -1345,7 +1474,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
 
         if is_internal or is_external:
             host, port = self._current_host_port()
-            pid = self._current_proc.pid if is_internal else self._find_pid_on_port(host, port)
+            pid = self._current_proc.pid if is_internal else self._find_pid_on_port(port)
             action = self._prompt_exit_action(pid, host, port, is_internal)
             if action not in ('stop', 'keep'):
                 # 取消退出，留在界面
@@ -1359,26 +1488,19 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
 
             if action == 'stop':
                 # 用户选择关闭本地模型
-                if is_internal and self._current_proc:
-                    try:
-                        if os.name == 'nt' and self._current_proc.pid:
-                            subprocess.run(["taskkill", "/F", "/T", "/PID", str(self._current_proc.pid)],
-                                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                        else:
-                            self._current_proc.terminate()
-                    except Exception:
-                        pass
+                if is_internal:
+                    self._kill_internal_proc()
                 elif is_external:
                     if pid:
-                        try:
-                            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-                        except Exception:
-                            pass
+                        self._kill_pid_tree(pid)
                     else:
+                        # 未能定位 PID：按可执行文件名兜底强杀
                         try:
-                            subprocess.run(["taskkill", "/F", "/IM", "llama-server.exe"],
-                                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                            subprocess.run(
+                                ["taskkill", "/F", "/IM", "llama-server.exe"],
+                                capture_output=True,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                            )
                         except Exception:
                             pass
             # 若 action == 'keep'，则无需终止进程，让服务进程留驻后台继续运行
@@ -1401,16 +1523,11 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
             self.stop_external_server()
             return
         if self._running:
-            if self._current_proc and self._current_proc.poll() is None:
-                try:
-                    if os.name == 'nt' and self._current_proc.pid:
-                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(self._current_proc.pid)],
-                                       capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                    else:
-                        self._current_proc.terminate()
-                except Exception:
-                    pass
+            # 先置标志位，随后才可能清理 _current_proc；这样即使 run_process
+            # 线程尚在 Popen 与 _current_proc 赋值之间，也能被本标志兜底终止。
             self._running = False
+            if self._current_proc and self._current_proc.poll() is None:
+                self._kill_internal_proc()
             self._server_ready = False
             self.append_log("\n[系统] 正在终止服务器进程...")
             try:
@@ -1448,14 +1565,15 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         cmd = self.build_command()
         exe_path = cmd[0]
         if not os.path.isfile(exe_path):
-            messagebox.showerror("程序未找到", f"在指定的路径下未找到可执行程序：\n{exe_path}\n请检查 llama.cpp 所在目录设置。")
+            messagebox.showerror("程序未找到",
+                                 f"在指定的路径下未找到可执行程序：\n{exe_path}\n请检查 llama.cpp 所在目录设置。")
             self.append_log(f"[错误] 未找到可执行文件: {exe_path}\n")
             return
 
         # 2. 端口冲突校验：检测是否有残留服务占用端口，避免新实例静默绑定失败
         host, port = self._current_host_port()
         if self.detect_server():
-            pid = self._find_pid_on_port(host, port)
+            pid = self._find_pid_on_port(port)
             pid_str = f" (PID {pid})" if pid else ""
             if messagebox.askyesno(
                 "端口冲突",
@@ -1464,16 +1582,11 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 f"是否立即终止占用该端口的残留进程，并启动新模型？"
             ):
                 if pid:
-                    try:
-                        subprocess.run(
-                            ["taskkill", "/F", "/T", "/PID", str(pid)],
-                            capture_output=True,
-                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                        )
+                    if self._kill_pid_tree(pid):
                         time.sleep(0.5)
                         self.append_log(f"[系统] 已终止占用端口 {port} 的原进程{pid_str}。\n")
-                    except Exception as e:
-                        messagebox.showerror("错误", f"无法终止占用进程: {e}")
+                    else:
+                        messagebox.showerror("错误", f"无法终止占用进程 (PID {pid})。")
                         return
                 else:
                     messagebox.showwarning("警告", f"未能定位到占用端口 {port} 的 PID，请手动排查后再启动。")
@@ -1493,7 +1606,7 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         self._running = True
         self._server_ready = False
         self._external_running = False
-        
+
         threading.Thread(target=self.run_process, args=(cmd,), daemon=True).start()
 
     def _safe_after(self, ms, func, *args):
@@ -1507,15 +1620,15 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
         try:
             exe_path = cmd[0]
             work_dir = os.path.dirname(os.path.abspath(exe_path)) if os.path.exists(exe_path) else None
-            
+
             # Windows 环境下将可执行文件所在目录动态注入 PATH 与 cwd，确保 ggml.dll / cudart64_*.dll / llama.dll 正常加载
             env = os.environ.copy()
             if work_dir and os.path.isdir(work_dir):
                 env["PATH"] = work_dir + os.pathsep + env.get("PATH", "")
 
             proc = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
+                cmd,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 encoding='utf-8',
@@ -1523,14 +1636,26 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 bufsize=1,
                 cwd=work_dir,
                 env=env,
-                creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == 'nt' else 0
+                creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
+                if os.name == 'nt' else 0
             )
-            
+
             self._current_proc = proc
             self._safe_after(0, self.update_process_info, True, proc.pid)
 
+            # 竞态保护：用户可能在 Popen 与 _current_proc 赋值之间已点击停止 / 关闭窗口。
+            # 此时 _running 已被置为 False，需立即终止刚创建的子进程，防止孤儿进程占用端口与显存。
+            if not self._running:
+                try:
+                    if os.name == 'nt' and proc.pid:
+                        self._kill_pid_tree(proc.pid)
+                    else:
+                        proc.terminate()
+                except Exception:
+                    pass
+
             for line in proc.stdout:
-                if not getattr(self, '_server_ready', False) and any(
+                if not self._server_ready and any(
                     k in line.lower() for k in ["listening on", "server is listening", "all slots are idle"]
                 ):
                     self._server_ready = True
@@ -1545,13 +1670,17 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
                 self._safe_after(0, self.server_stopped)
 
         except FileNotFoundError:
-            self._safe_after(0, self.append_log, f"\n[错误] 在指定的目录下找不到执行程序 ({cmd[0]})！\n请确保 llama.cpp 目录或执行文件选择正确。\n")
+            self._safe_after(0, self.append_log,
+                             f"\n[错误] 在指定的目录下找不到执行程序 ({cmd[0]})！\n请确保 llama.cpp 目录或执行文件选择正确。\n")
             self._safe_after(0, self.server_stopped)
         except Exception as e:
             self._safe_after(0, self.append_log, f"\n[错误] 发生异常: {str(e)}\n")
             self._safe_after(0, self.server_stopped)
 
     def server_stopped(self):
+        # 若 UI 层（toggle_server）已提前停止并清理状态，则本次调用为重复回调，静默返回
+        if not self._running and self._current_proc is None:
+            return
         self._running = False
         self._server_ready = False
         try:
@@ -1565,13 +1694,15 @@ XTC 采样器 (--xtc-threshold / --xtc-probability)： 动态剔除机械套话�
     def append_log(self, text):
         try:
             # 限制最大行数（超过 10000 行自动清理前 2000 行，防止极端长日志导致 UI 卡顿）
-            line_count = int(self.log_text.index('end-1c').split('.')[0])
+            # 使用 'end' 而非 'end-1c'，避免无换行结尾时低估行数
+            line_count = int(self.log_text.index('end').split('.')[0])
             if line_count > 10000:
                 self.log_text.delete("1.0", "2000.0")
             self.log_text.insert(tk.END, text)
             self.log_text.see(tk.END)
         except tk.TclError:
             pass
+
 
 if __name__ == "__main__":
     root = tk.Tk()
