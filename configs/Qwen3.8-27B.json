@@ -1,7 +1,7 @@
 {
     "llama_dir": "D:/Program files/Llama",
     "model": "D:/Program Files/Llama/Models/Qwen3.8-27B/Qwen3.8-27B-UD-Q4_K_M.gguf",
-    "mmproj": "D:/Program Files/Llama/Models/Qwen3.8-27B/mmproj-F16.gguf",
+    "mmproj": "D:/Program Files/Llama/Models/Qwen3.8-27B/mmproj-BF16.gguf",
     "no_mmproj_offload": true,
     "alias": "",
     "api_key": "",
